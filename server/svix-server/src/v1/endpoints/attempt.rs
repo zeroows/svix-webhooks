@@ -43,6 +43,7 @@ use crate::v1::utils::Pagination;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ModelOut)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageAttemptOut {
+    pub url: String,
     pub response: String,
     pub response_status_code: i16,
     pub status: MessageStatus,
@@ -60,6 +61,7 @@ pub struct MessageAttemptOut {
 impl From<messageattempt::Model> for MessageAttemptOut {
     fn from(model: messageattempt::Model) -> Self {
         Self {
+            url: model.url,
             response: model.response,
             response_status_code: model.response_status_code,
             status: model.status,
@@ -432,20 +434,22 @@ async fn list_attempts_by_msg(
 #[serde(rename_all = "camelCase")]
 pub struct MessageEndpointOut {
     #[serde(flatten)]
-    endpoint: super::endpoint::EndpointOut,
+    endpoint: super::endpoint::EndpointOutCommon,
+    id: EndpointId,
     status: MessageStatus,
     next_attempt: Option<DateTime<Utc>>,
 }
 
 impl ModelOut for MessageEndpointOut {
     fn id_copy(&self) -> String {
-        self.endpoint.id.0.clone()
+        self.id.0.clone()
     }
 }
 
 impl MessageEndpointOut {
     fn from_dest_and_endp(dest: messagedestination::Model, endp: endpoint::Model) -> Self {
         MessageEndpointOut {
+            id: endp.id.clone(),
             endpoint: endp.into(),
             status: dest.status,
             next_attempt: dest.next_attempt.map(Into::into),
@@ -697,30 +701,41 @@ async fn resend_webhook(
 }
 
 pub fn router() -> Router {
-    Router::new().nest(
-        "/app/:app_id/",
-        Router::new()
-            .nest(
-                "/msg/:msg_id",
-                Router::new()
-                    // NOTE: [`list_messageattempts`] is deprecated
-                    .route("/attempt/", get(list_messageattempts))
-                    .route("/attempt/:attempt_id/", get(get_messageattempt))
-                    .route("/endpoint/", get(list_attempted_destinations))
-                    .route("/endpoint/:endp_id/resend/", post(resend_webhook))
-                    // NOTE: [`list_attempts_for_endpoint`] is deprecated
-                    .route(
-                        "/endpoint/:endp_id/attempt/",
-                        get(list_attempts_for_endpoint),
-                    ),
-            )
-            .route("/endpoint/:endp_id/msg/", get(list_attempted_messages))
-            .route(
-                "/attempt/endpoint/:endp_id/",
-                get(list_attempts_by_endpoint),
-            )
-            .route("/attempt/msg/:msg_id/", get(list_attempts_by_msg)),
-    )
+    Router::new()
+        // NOTE: [`list_messageattempts`] is deprecated
+        .route(
+            "/app/:app_id/msg/:msg_id/attempt/",
+            get(list_messageattempts),
+        )
+        .route(
+            "/app/:app_id/msg/:msg_id/attempt/:attempt_id/",
+            get(get_messageattempt),
+        )
+        .route(
+            "/app/:app_id/msg/:msg_id/endpoint/",
+            get(list_attempted_destinations),
+        )
+        .route(
+            "/app/:app_id/msg/:msg_id/endpoint/:endp_id/resend/",
+            post(resend_webhook),
+        )
+        // NOTE: [`list_attempts_for_endpoint`] is deprecated
+        .route(
+            "/app/:app_id/msg/:msg_id/endpoint/:endp_id/attempt/",
+            get(list_attempts_for_endpoint),
+        )
+        .route(
+            "/app/:app_id/endpoint/:endp_id/msg/",
+            get(list_attempted_messages),
+        )
+        .route(
+            "/app/:app_id/attempt/endpoint/:endp_id/",
+            get(list_attempts_by_endpoint),
+        )
+        .route(
+            "/app/:app_id/attempt/msg/:msg_id/",
+            get(list_attempts_by_msg),
+        )
 }
 
 #[cfg(test)]

@@ -95,7 +95,7 @@ async fn test_no_redirects_policy() {
     run_with_retries(|| async {
         let attempts: ListResponse<MessageAttemptOut> = client
             .get(
-                &format!("api/v1/app/{}/attempt/msg/{}/", app_id, msg_id),
+                &format!("api/v1/app/{app_id}/attempt/msg/{msg_id}/"),
                 StatusCode::OK,
             )
             .await
@@ -154,13 +154,13 @@ async fn test_endpoint_disable_on_repeated_failure() {
         run_with_retries(|| async {
             let ep: EndpointOut = client
                 .get(
-                    &format!("api/v1/app/{}/endpoint/{}/", app_id, ep_id),
+                    &format!("api/v1/app/{app_id}/endpoint/{ep_id}/"),
                     StatusCode::OK,
                 )
                 .await
                 .unwrap();
 
-            if !ep.disabled {
+            if !ep.ep.disabled {
                 anyhow::bail!("Endpoint not disabled")
             } else {
                 Ok(())
@@ -206,13 +206,13 @@ async fn test_endpoint_disable_expiration_duration() {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let ep: EndpointOut = client
             .get(
-                &format!("api/v1/app/{}/endpoint/{}/", app_id, ep_id),
+                &format!("api/v1/app/{app_id}/endpoint/{ep_id}/"),
                 StatusCode::OK,
             )
             .await
             .unwrap();
 
-        assert!(!ep.disabled);
+        assert!(!ep.ep.disabled);
     }
 }
 
@@ -317,13 +317,13 @@ async fn test_endpoint_disable_on_sporadic_failure() {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let ep: EndpointOut = client
             .get(
-                &format!("api/v1/app/{}/endpoint/{}/", app_id, ep_id),
+                &format!("api/v1/app/{app_id}/endpoint/{ep_id}/"),
                 StatusCode::OK,
             )
             .await
             .unwrap();
 
-        assert!(!ep.disabled);
+        assert!(!ep.ep.disabled);
 
         receiver.jh.abort();
     }

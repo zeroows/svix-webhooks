@@ -112,13 +112,14 @@ pub async fn run_with_prefix(
         cfg.operational_webhook_address.clone(),
     );
 
+    let svc_cache = cache.clone();
     // build our application with a route
     let app = Router::new()
         .nest("/api/v1", v1::router())
         .merge(docs::router())
         .layer(
-            ServiceBuilder::new().layer_fn(|service| IdempotencyService {
-                cache: cache.clone(),
+            ServiceBuilder::new().layer_fn(move |service| IdempotencyService {
+                cache: svc_cache.clone(),
                 service,
             }),
         )
@@ -172,7 +173,15 @@ pub async fn run_with_prefix(
         async {
             if with_worker {
                 tracing::debug!("Worker: Initializing");
-                worker_loop(&cfg, &pool, cache, queue_tx, queue_rx, op_webhook_sender).await
+                worker_loop(
+                    &cfg,
+                    &pool,
+                    cache.clone(),
+                    queue_tx,
+                    queue_rx,
+                    op_webhook_sender,
+                )
+                .await
             } else {
                 tracing::debug!("Worker: off");
                 Ok(())
@@ -198,7 +207,7 @@ pub fn setup_tracing(cfg: &ConfigurationInner) {
     if std::env::var_os("RUST_LOG").is_none() {
         let level = cfg.log_level.to_string();
         let mut var = vec![
-            format!("{crate}={level}", crate = CRATE_NAME),
+            format!("{CRATE_NAME}={level}"),
             format!("tower_http={level}"),
         ];
 

@@ -66,7 +66,7 @@ kv_def!(FailureCacheKey, FailureCacheValue, "SVIX_FAILURE_CACHE");
 
 impl FailureCacheKey {
     pub fn new(app_id: &ApplicationId, endp_id: &EndpointId) -> FailureCacheKey {
-        FailureCacheKey(format!("_{}_{}", app_id, endp_id))
+        FailureCacheKey(format!("_{app_id}_{endp_id}"))
     }
 }
 
@@ -151,7 +151,7 @@ fn sign_msg(
     msg_id: &MessageId,
     endpoint_signing_keys: &[&EndpointSecretInternal],
 ) -> String {
-    let to_sign = format!("{}.{}.{}", msg_id, timestamp, body);
+    let to_sign = format!("{msg_id}.{timestamp}.{body}");
     endpoint_signing_keys
         .iter()
         .map(|x| {
@@ -250,13 +250,12 @@ async fn dispatch(
         app_uid,
         msg_uid,
     }: DispatchExtraIds<'_>,
-    payload: &Json,
+    body: String,
     endp: CreateMessageEndpoint,
 ) -> Result<()> {
     tracing::trace!("Dispatch: {} {}", &msg_task.msg_id, &endp.id);
 
     let now = Utc::now();
-    let body = serde_json::to_string(&payload).expect("Error parsing message body");
     let headers = {
         let keys = endp.valid_signing_keys();
 
@@ -277,6 +276,7 @@ async fn dispatch(
             &endp.url,
         );
         headers.insert("user-agent", USER_AGENT.to_string().parse().unwrap());
+        headers.insert("content-type", "application/json".parse().unwrap());
         headers
     };
 
@@ -288,7 +288,7 @@ async fn dispatch(
         .post(&endp.url)
         .headers(headers)
         .timeout(Duration::from_secs(cfg.worker_request_timeout as u64))
-        .json(&payload)
+        .body(body)
         .send()
         .await;
 
@@ -350,7 +350,7 @@ async fn dispatch(
                     tracing::warn!("Error reading response body: {}", err);
                     messageattempt::ActiveModel {
                         response_status_code: Set(status_code),
-                        response: Set(format!("failed to read response body: {}", err)),
+                        response: Set(format!("failed to read response body: {err}")),
                         status: Set(status),
                         ..attempt
                     }
@@ -573,8 +573,8 @@ async fn process_task(worker_context: WorkerContext<'_>, queue_task: Arc<QueueTa
         cache.clone(),
         db,
         None,
-        msg.app_id.clone(),
         msg.org_id.clone(),
+        msg.app_id.clone(),
         Duration::from_secs(30),
     )
     .await?
@@ -583,7 +583,7 @@ async fn process_task(worker_context: WorkerContext<'_>, queue_task: Arc<QueueTa
     let app_uid = create_message_app.uid.clone();
 
     let endpoints: Vec<CreateMessageEndpoint> = create_message_app
-        .filtered_endpoints(*trigger_type, &msg)
+        .filtered_endpoints(*trigger_type, &msg.event_type, msg.channels.as_ref())
         .iter()
         .filter(|endpoint| match &*queue_task {
             QueueTask::HealthCheck => unreachable!(),
@@ -634,6 +634,8 @@ async fn process_task(worker_context: WorkerContext<'_>, queue_task: Arc<QueueTa
                 QueueTask::HealthCheck => unreachable!(),
             };
 
+            let body = serde_json::to_string(&payload).expect("Error parsing message body");
+
             dispatch(
                 worker_context,
                 task,
@@ -642,7 +644,7 @@ async fn process_task(worker_context: WorkerContext<'_>, queue_task: Arc<QueueTa
                     app_uid: app_uid.as_ref(),
                     msg_uid: msg_uid.as_ref(),
                 },
-                payload,
+                body,
                 endpoint,
             )
         })
@@ -671,17 +673,12 @@ pub async fn worker_loop(
     op_webhook_sender: OperationalWebhookSender,
 ) -> Result<()> {
     loop {
+        if crate::SHUTTING_DOWN.load(Ordering::SeqCst) {
+            break;
+        }
+
         match queue_rx.receive_all().await {
             Ok(batch) => {
-                if crate::SHUTTING_DOWN.load(Ordering::SeqCst) {
-                    for delivery in batch {
-                        queue_tx.nack(delivery).await.expect(
-                            "Error sending 'nack' to Redis after receiving shutdown signal",
-                        );
-                    }
-                    break;
-                }
-
                 for delivery in batch {
                     let cfg = cfg.clone();
                     let pool = pool.clone();
@@ -860,7 +857,7 @@ mod tests {
             &[&test_key],
         );
 
-        let to_sign = format!("{}.{}.{}", msg_id, timestamp, body);
+        let to_sign = format!("{msg_id}.{timestamp}.{body}");
         assert!(signatures.starts_with("v1a,"));
         let sig: Signature = Signature::from_slice(
             base64::decode(&signatures["v1a,".len()..])

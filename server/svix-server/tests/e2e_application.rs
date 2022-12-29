@@ -224,7 +224,7 @@ async fn test_crud() {
     let app_1_id = app_1.id;
     let app_1: ApplicationOut = client
         .put(
-            &format!("api/v1/app/{}/", app_1_id),
+            &format!("api/v1/app/{app_1_id}/"),
             application_in(APP_NAME_1_2),
             StatusCode::OK,
         )
@@ -234,7 +234,7 @@ async fn test_crud() {
     let app_2_id = app_2.id;
     let app_2: ApplicationOut = client
         .put(
-            &format!("api/v1/app/{}/", app_2_id),
+            &format!("api/v1/app/{app_2_id}/"),
             application_in(APP_NAME_2_2),
             StatusCode::OK,
         )
@@ -244,7 +244,7 @@ async fn test_crud() {
     // CONFIRM UPDATE
     assert_eq!(
         client
-            .get::<ApplicationOut>(&format!("api/v1/app/{}/", app_1_id), StatusCode::OK,)
+            .get::<ApplicationOut>(&format!("api/v1/app/{app_1_id}/"), StatusCode::OK,)
             .await
             .unwrap(),
         app_1
@@ -252,7 +252,7 @@ async fn test_crud() {
 
     assert_eq!(
         client
-            .get::<ApplicationOut>(&format!("api/v1/app/{}/", app_2_id), StatusCode::OK,)
+            .get::<ApplicationOut>(&format!("api/v1/app/{app_2_id}/"), StatusCode::OK,)
             .await
             .unwrap(),
         app_2
@@ -293,7 +293,7 @@ async fn test_crud() {
 
     let updated: ApplicationOut = client
         .patch(
-            &format!("api/v1/app/{}", app.id),
+            &format!("api/v1/app/{}/", app.id),
             serde_json::json!({
                 "metadata": {
                     "bizz": "bar"
@@ -307,7 +307,7 @@ async fn test_crud() {
 
     let new_app: ApplicationOut = client
         .put(
-            "api/v1/app/one_upserted_boi",
+            "api/v1/app/one_upserted_boi/",
             serde_json::json!({
                 "name": "Apps for two",
                 "metadata": {
@@ -323,7 +323,7 @@ async fn test_crud() {
 
     let updated_metadata_app: ApplicationOut = client
         .put(
-            &format!("api/v1/app/{}", new_app.id),
+            &format!("api/v1/app/{}/", new_app.id),
             serde_json::json!({
                 "name": "New Name",
                 "metadata": {

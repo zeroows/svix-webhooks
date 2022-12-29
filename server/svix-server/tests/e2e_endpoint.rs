@@ -1,17 +1,17 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-use std::sync::Arc;
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
-
+use crate::utils::common_calls::metadata;
 use anyhow::Result;
 use chrono::Utc;
 use ed25519_compact::Signature;
 use reqwest::StatusCode;
 use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement};
+use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use serde::Deserialize;
 use svix::webhooks::Webhook;
@@ -58,7 +58,7 @@ async fn get_endpoint(
 ) -> Result<EndpointOut> {
     client
         .get(
-            &format!("api/v1/app/{}/endpoint/{}/", app_id, ep_id),
+            &format!("api/v1/app/{app_id}/endpoint/{ep_id}/"),
             StatusCode::OK,
         )
         .await
@@ -71,7 +71,7 @@ async fn get_endpoint_404(
 ) -> Result<IgnoredResponse> {
     client
         .get(
-            &format!("api/v1/app/{}/endpoint/{}/", app_id, ep_id),
+            &format!("api/v1/app/{app_id}/endpoint/{ep_id}/"),
             StatusCode::NOT_FOUND,
         )
         .await
@@ -80,7 +80,7 @@ async fn get_endpoint_404(
 async fn delete_endpoint(client: &TestClient, app_id: &ApplicationId, ep_id: &str) -> Result<()> {
     let _: IgnoredResponse = client
         .delete(
-            &format!("api/v1/app/{}/endpoint/{}/", app_id, ep_id),
+            &format!("api/v1/app/{app_id}/endpoint/{ep_id}/"),
             StatusCode::NO_CONTENT,
         )
         .await?;
@@ -100,7 +100,7 @@ async fn test_patch() {
         .unwrap()
         .id;
 
-    let url = format!("api/v1/app/{}/endpoint/{}/", app, ep);
+    let url = format!("api/v1/app/{app}/endpoint/{ep}/");
 
     // Test that the description may be set
     let _: EndpointOut = client
@@ -119,15 +119,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.description, "test".to_owned());
+    assert_eq!(out.ep.description, "test".to_owned());
     // Assert that no other changes were made
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url".to_owned());
-    assert_eq!(out.version, 1);
-    assert!(!out.disabled);
-    assert_eq!(out.event_types_ids, None);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.version, 1);
+    assert!(!out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
+    assert_eq!(out.ep.channels, None);
 
     // Test that the rate limit may be set
     let _: EndpointOut = client
@@ -146,15 +146,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.rate_limit, Some(1));
+    assert_eq!(out.ep.rate_limit, Some(1));
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url".to_owned());
-    assert_eq!(out.version, 1);
-    assert!(!out.disabled);
-    assert_eq!(out.event_types_ids, None);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.version, 1);
+    assert!(!out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
+    assert_eq!(out.ep.channels, None);
 
     // Test that the rate limit may be unset
     let _: EndpointOut = client
@@ -173,15 +173,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.rate_limit, None);
+    assert_eq!(out.ep.rate_limit, None);
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url".to_owned());
-    assert_eq!(out.version, 1);
-    assert!(!out.disabled);
-    assert_eq!(out.event_types_ids, None);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.version, 1);
+    assert!(!out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
+    assert_eq!(out.ep.channels, None);
 
     // Test that the UID may be set
     let _: EndpointOut = client
@@ -200,15 +200,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.uid, Some(EndpointUid("some".to_owned())));
+    assert_eq!(out.ep.uid, Some(EndpointUid("some".to_owned())));
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.url, "http://bad.url".to_owned());
-    assert_eq!(out.version, 1);
-    assert!(!out.disabled);
-    assert_eq!(out.event_types_ids, None);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.version, 1);
+    assert!(!out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
+    assert_eq!(out.ep.channels, None);
 
     // Test the UID may be unset
     let _: EndpointOut = client
@@ -227,15 +227,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.uid, None);
+    assert_eq!(out.ep.uid, None);
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.url, "http://bad.url".to_owned());
-    assert_eq!(out.version, 1);
-    assert!(!out.disabled);
-    assert_eq!(out.event_types_ids, None);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.version, 1);
+    assert!(!out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
+    assert_eq!(out.ep.channels, None);
 
     // Test that the URL may be set
     let _: EndpointOut = client
@@ -254,15 +254,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.uid, None);
-    assert_eq!(out.version, 1);
-    assert!(!out.disabled);
-    assert_eq!(out.event_types_ids, None);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.version, 1);
+    assert!(!out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
+    assert_eq!(out.ep.channels, None);
 
     // Test that the version may be set
     let _: EndpointOut = client
@@ -281,15 +281,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.version, 2);
+    assert_eq!(out.ep.version, 2);
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url2".to_owned());
-    assert!(!out.disabled);
-    assert_eq!(out.event_types_ids, None);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert!(!out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
+    assert_eq!(out.ep.channels, None);
 
     // Test that disabled may be set
     let _: EndpointOut = client
@@ -308,22 +308,22 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert!(out.disabled);
+    assert!(out.ep.disabled);
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url2".to_owned());
-    assert_eq!(out.version, 2);
-    assert_eq!(out.event_types_ids, None);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.version, 2);
+    assert_eq!(out.ep.event_types_ids, None);
+    assert_eq!(out.ep.channels, None);
 
     // Test that event type IDs may be set
 
     // But first make an event type to set it to
     let _: EventTypeOut = client
         .post(
-            "api/v1/event-type",
+            "api/v1/event-type/",
             serde_json::json!({
                 "description": "a test event type",
                 "name": "test",
@@ -350,19 +350,19 @@ async fn test_patch() {
         .await
         .unwrap();
     assert_eq!(
-        out.event_types_ids,
+        out.ep.event_types_ids,
         Some(EventTypeNameSet(HashSet::from([EventTypeName(
             "test".to_owned()
         )])))
     );
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url2".to_owned());
-    assert_eq!(out.version, 2);
-    assert!(out.disabled);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.version, 2);
+    assert!(out.ep.disabled);
+    assert_eq!(out.ep.channels, None);
 
     // Test that event type IDs may be unset
     let _: EndpointOut = client
@@ -381,15 +381,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.event_types_ids, None);
+    assert_eq!(out.ep.event_types_ids, None);
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url2".to_owned());
-    assert_eq!(out.version, 2);
-    assert!(out.disabled);
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.version, 2);
+    assert!(out.ep.disabled);
+    assert_eq!(out.ep.channels, None);
 
     // Test that channels may be set
     let _: EndpointOut = client
@@ -409,19 +409,19 @@ async fn test_patch() {
         .await
         .unwrap();
     assert_eq!(
-        out.channels,
+        out.ep.channels,
         Some(EventChannelSet(HashSet::from([EventChannel(
             "test".to_owned()
         )])))
     );
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url2".to_owned());
-    assert_eq!(out.version, 2);
-    assert!(out.disabled);
-    assert_eq!(out.event_types_ids, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.version, 2);
+    assert!(out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
 
     // Test that channels may be unset
     let _: EndpointOut = client
@@ -440,15 +440,15 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.channels, None);
+    assert_eq!(out.ep.channels, None);
     // Assert that no other changes were made
-    assert_eq!(out.description, "test".to_owned());
-    assert_eq!(out.rate_limit, None);
-    assert_eq!(out.uid, None);
-    assert_eq!(out.url, "http://bad.url2".to_owned());
-    assert_eq!(out.version, 2);
-    assert!(out.disabled);
-    assert_eq!(out.event_types_ids, None);
+    assert_eq!(out.ep.description, "test".to_owned());
+    assert_eq!(out.ep.rate_limit, None);
+    assert_eq!(out.ep.uid, None);
+    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.version, 2);
+    assert!(out.ep.disabled);
+    assert_eq!(out.ep.event_types_ids, None);
 }
 
 #[tokio::test]
@@ -471,26 +471,26 @@ async fn test_crud() {
     let app_1_ep_1 = create_test_endpoint(&client, &app_1, EP_URI_APP_1_EP_1_VER_1)
         .await
         .unwrap();
-    assert_eq!(app_1_ep_1.url, EP_URI_APP_1_EP_1_VER_1);
-    assert_eq!(app_1_ep_1.version, 1);
+    assert_eq!(app_1_ep_1.ep.url, EP_URI_APP_1_EP_1_VER_1);
+    assert_eq!(app_1_ep_1.ep.version, 1);
 
     let app_1_ep_2 = create_test_endpoint(&client, &app_1, EP_URI_APP_1_EP_2)
         .await
         .unwrap();
-    assert_eq!(app_1_ep_2.url, EP_URI_APP_1_EP_2);
-    assert_eq!(app_1_ep_2.version, 1);
+    assert_eq!(app_1_ep_2.ep.url, EP_URI_APP_1_EP_2);
+    assert_eq!(app_1_ep_2.ep.version, 1);
 
     let app_2_ep_1 = create_test_endpoint(&client, &app_2, EP_URI_APP_2_EP_1)
         .await
         .unwrap();
-    assert_eq!(app_2_ep_1.url, EP_URI_APP_2_EP_1);
-    assert_eq!(app_2_ep_1.version, 1);
+    assert_eq!(app_2_ep_1.ep.url, EP_URI_APP_2_EP_1);
+    assert_eq!(app_2_ep_1.ep.version, 1);
 
     let app_2_ep_2 = create_test_endpoint(&client, &app_2, EP_URI_APP_2_EP_2)
         .await
         .unwrap();
-    assert_eq!(app_2_ep_2.url, EP_URI_APP_2_EP_2);
-    assert_eq!(app_2_ep_2.version, 1);
+    assert_eq!(app_2_ep_2.ep.url, EP_URI_APP_2_EP_2);
+    assert_eq!(app_2_ep_2.ep.version, 1);
 
     // READ
 
@@ -530,29 +530,29 @@ async fn test_crud() {
     let app_1_ep_1_id = app_1_ep_1.id;
     let app_1_ep_1: EndpointOut = client
         .put(
-            &format!("api/v1/app/{}/endpoint/{}/", app_1, app_1_ep_1_id),
+            &format!("api/v1/app/{app_1}/endpoint/{app_1_ep_1_id}/"),
             endpoint_in(EP_URI_APP_1_EP_1_VER_2),
             StatusCode::OK,
         )
         .await
         .unwrap();
-    assert_eq!(app_1_ep_1.url, EP_URI_APP_1_EP_1_VER_2);
-
-    // Test that PUT with an invalid ID creates an endpoint
-    let app_1_ep_3: EndpointOut = client
-        .put(
-            &format!("api/v1/app/{}/endpoint/fake-id/", app_1),
-            endpoint_in(EP_URI_APP_1_EP_1_VER_2),
-            StatusCode::CREATED,
-        )
-        .await
-        .unwrap();
+    assert_eq!(app_1_ep_1.ep.url, EP_URI_APP_1_EP_1_VER_2);
 
     // CONFIRM UPDATE
     assert_eq!(
         get_endpoint(&client, &app_1, &app_1_ep_1_id).await.unwrap(),
         app_1_ep_1
     );
+
+    // Test that PUT with an invalid ID creates an endpoint
+    let app_1_ep_3: EndpointOut = client
+        .put(
+            &format!("api/v1/app/{app_1}/endpoint/fake-id/"),
+            endpoint_in(EP_URI_APP_1_EP_1_VER_2),
+            StatusCode::CREATED,
+        )
+        .await
+        .unwrap();
 
     // LIST
     let list_app_1: ListResponse<EndpointOut> = client
@@ -599,6 +599,32 @@ async fn test_crud() {
     get_endpoint_404(&client, &app_2, &app_2_ep_2.id)
         .await
         .unwrap();
+
+    let mut ep_with_metadata = endpoint_in("https://somewhere.beyond.the.c");
+    ep_with_metadata.metadata = metadata(r#"{"foo": "bar", "bizz": "baz"}"#);
+    let ep = post_endpoint(&client, &app_1, ep_with_metadata)
+        .await
+        .unwrap();
+    assert_eq!(ep.metadata, metadata(r#"{"foo": "bar", "bizz": "baz"}"#));
+
+    let ep_alias = get_endpoint(&client, &app_1, &ep.id).await.unwrap();
+    assert_eq!(
+        ep_alias.metadata,
+        metadata(r#"{"foo": "bar", "bizz": "baz"}"#)
+    );
+
+    // Test that metadata may be unset
+    let ep_alias2: EndpointOut = client
+        .patch(
+            &format!("api/v1/app/{}/endpoint/{}/", &app_1, &ep.id),
+            serde_json::json!({
+                "metadata": {},
+            }),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+    assert_eq!(ep_alias2.metadata, metadata(r#"{}"#));
 }
 
 #[tokio::test]
@@ -648,7 +674,7 @@ async fn test_uid() {
 
     client
         .post::<_, IgnoredResponse>(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             ep_2,
             StatusCode::CONFLICT,
         )
@@ -687,7 +713,7 @@ async fn test_uid() {
         .await
         .unwrap();
     assert_eq!(ep_1.id, ep_1_updated.id);
-    assert_eq!(ep_1.uid, ep_1_updated.uid);
+    assert_eq!(ep_1.ep.uid, ep_1_updated.ep.uid);
 
     // Delete One then Create One -- UIDs may be reused after deletion
     delete_endpoint(&client, &app_id, &ep_1.id).await.unwrap();
@@ -799,7 +825,7 @@ async fn test_recovery_should_fail_if_start_time_too_old() {
 
     let _: serde_json::Value = client
         .post(
-            &format!("api/v1/app/{}/endpoint/{}/recover/", app_id, endp_id),
+            &format!("api/v1/app/{app_id}/endpoint/{endp_id}/recover/"),
             RecoverIn {
                 since: Utc::now() - chrono::Duration::weeks(3),
             },
@@ -848,7 +874,7 @@ async fn test_recovery_expected_retry_counts() {
     recover_webhooks(
         &client,
         after_msg,
-        &format!("api/v1/app/{}/endpoint/{}/recover/", app_id, endp_id),
+        &format!("api/v1/app/{app_id}/endpoint/{endp_id}/recover/"),
     )
     .await;
 
@@ -860,7 +886,7 @@ async fn test_recovery_expected_retry_counts() {
     recover_webhooks(
         &client,
         before_msg,
-        &format!("api/v1/app/{}/endpoint/{}/recover/", app_id, endp_id),
+        &format!("api/v1/app/{app_id}/endpoint/{endp_id}/recover/"),
     )
     .await;
 
@@ -885,7 +911,7 @@ async fn test_endpoint_rotate_max() {
     for _ in 0..ExpiringSigningKeys::MAX_OLD_KEYS {
         let _: IgnoredResponse = client
             .post(
-                &format!("api/v1/app/{}/endpoint/{}/secret/rotate/", app_id, endp_id),
+                &format!("api/v1/app/{app_id}/endpoint/{endp_id}/secret/rotate/"),
                 serde_json::json!({ "key": null }),
                 StatusCode::NO_CONTENT,
             )
@@ -895,7 +921,7 @@ async fn test_endpoint_rotate_max() {
 
     let _: IgnoredResponse = client
         .post(
-            &format!("api/v1/app/{}/endpoint/{}/secret/rotate/", app_id, endp_id),
+            &format!("api/v1/app/{app_id}/endpoint/{endp_id}/secret/rotate/"),
             serde_json::json!({ "key": null }),
             StatusCode::BAD_REQUEST,
         )
@@ -1311,7 +1337,7 @@ async fn test_invalid_endpoint_secret() {
 
         let _: IgnoredResponse = client
             .post(
-                &format!("api/v1/app/{}/endpoint/", app_id),
+                &format!("api/v1/app/{app_id}/endpoint/"),
                 ep_in,
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
@@ -1466,7 +1492,7 @@ async fn test_endpoint_filter_events() {
 
     let _ep_with_empty_events: IgnoredResponse = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             ep_empty_events,
             StatusCode::UNPROCESSABLE_ENTITY,
         )
@@ -1475,7 +1501,7 @@ async fn test_endpoint_filter_events() {
 
     let _ep_with_nonexistent_event: IgnoredResponse = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             ep_with_events.to_owned(),
             StatusCode::UNPROCESSABLE_ENTITY,
         )
@@ -1484,7 +1510,7 @@ async fn test_endpoint_filter_events() {
 
     let _et: EventTypeOut = client
         .post(
-            "api/v1/event-type",
+            "api/v1/event-type/",
             event_type_in("et1", None).unwrap(),
             StatusCode::CREATED,
         )
@@ -1493,14 +1519,14 @@ async fn test_endpoint_filter_events() {
 
     let ep_with_valid_event: EndpointOut = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             ep_with_events.to_owned(),
             StatusCode::CREATED,
         )
         .await
         .unwrap();
 
-    assert_eq!(ep_with_valid_event.event_types_ids.unwrap(), expected_et);
+    assert_eq!(ep_with_valid_event.ep.event_types_ids.unwrap(), expected_et);
 
     let ep_removed_events: EndpointOut = client
         .put(
@@ -1511,13 +1537,13 @@ async fn test_endpoint_filter_events() {
         .await
         .unwrap();
 
-    assert!(ep_removed_events.event_types_ids.is_none());
+    assert!(ep_removed_events.ep.event_types_ids.is_none());
 
     let ep_removed_events = get_endpoint(&client, &app_id, &ep_removed_events.id)
         .await
         .unwrap();
 
-    assert!(ep_removed_events.event_types_ids.is_none());
+    assert!(ep_removed_events.ep.event_types_ids.is_none());
 
     let ep_updated_events: EndpointOut = client
         .put(
@@ -1528,13 +1554,13 @@ async fn test_endpoint_filter_events() {
         .await
         .unwrap();
 
-    assert_eq!(ep_updated_events.event_types_ids.unwrap(), expected_et);
+    assert_eq!(ep_updated_events.ep.event_types_ids.unwrap(), expected_et);
 
     let ep_updated_events: EndpointOut = get_endpoint(&client, &app_id, &ep_with_valid_event.id)
         .await
         .unwrap();
 
-    assert_eq!(ep_updated_events.event_types_ids.unwrap(), expected_et);
+    assert_eq!(ep_updated_events.ep.event_types_ids.unwrap(), expected_et);
 }
 
 #[tokio::test]
@@ -1565,7 +1591,7 @@ async fn test_endpoint_filter_channels() {
 
     let _ep_w_empty_channel: IgnoredResponse = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             ep_empty_channels,
             StatusCode::UNPROCESSABLE_ENTITY,
         )
@@ -1574,14 +1600,14 @@ async fn test_endpoint_filter_channels() {
 
     let ep_with_channel: EndpointOut = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             ep_with_channels.to_owned(),
             StatusCode::CREATED,
         )
         .await
         .unwrap();
 
-    assert_eq!(ep_with_channel.channels.unwrap(), expected_ec);
+    assert_eq!(ep_with_channel.ep.channels.unwrap(), expected_ec);
 
     let ep_with_deleted_channel: EndpointOut = client
         .put(
@@ -1592,14 +1618,14 @@ async fn test_endpoint_filter_channels() {
         .await
         .unwrap();
 
-    assert!(ep_with_deleted_channel.channels.is_none());
+    assert!(ep_with_deleted_channel.ep.channels.is_none());
 
     // GET / assert channels empty
     let ep_with_deleted_channel: EndpointOut = get_endpoint(&client, &app_id, &ep_with_channel.id)
         .await
         .unwrap();
 
-    assert!(ep_with_deleted_channel.channels.is_none());
+    assert!(ep_with_deleted_channel.ep.channels.is_none());
 
     // Update with channels:
     let updated_ep_with_channel: EndpointOut = client
@@ -1614,7 +1640,7 @@ async fn test_endpoint_filter_channels() {
         .await
         .unwrap();
 
-    assert_eq!(updated_ep_with_channel.channels.unwrap(), expected_ec);
+    assert_eq!(updated_ep_with_channel.ep.channels.unwrap(), expected_ec);
 
     // GET / assert channels match
     let updated_ep_with_channel: EndpointOut =
@@ -1622,7 +1648,7 @@ async fn test_endpoint_filter_channels() {
             .await
             .unwrap();
 
-    assert_eq!(updated_ep_with_channel.channels.unwrap(), expected_ec);
+    assert_eq!(updated_ep_with_channel.ep.channels.unwrap(), expected_ec);
 }
 
 #[tokio::test]
@@ -1642,7 +1668,7 @@ async fn test_rate_limit() {
         .await
         .unwrap();
 
-    assert_eq!(endp.rate_limit.unwrap(), 100);
+    assert_eq!(endp.ep.rate_limit.unwrap(), 100);
 
     let endp = put_endpoint(
         &client,
@@ -1656,11 +1682,11 @@ async fn test_rate_limit() {
     .await
     .unwrap();
 
-    assert!(endp.rate_limit.is_none());
+    assert!(endp.ep.rate_limit.is_none());
 
     let endp = get_endpoint(&client, &app_id, &endp.id).await.unwrap();
 
-    assert!(endp.rate_limit.is_none());
+    assert!(endp.ep.rate_limit.is_none());
 }
 
 #[tokio::test]
@@ -1676,7 +1702,7 @@ async fn test_msg_event_types_filter() {
         event_type_in("et2", None).unwrap(),
     ] {
         let _: EventTypeOut = client
-            .post("api/v1/event-type", et, StatusCode::CREATED)
+            .post("api/v1/event-type/", et, StatusCode::CREATED)
             .await
             .unwrap();
     }
@@ -1784,7 +1810,7 @@ async fn test_msg_channels_filter() {
 
         let msg: MessageOut = client
             .get(
-                &format!("api/v1/app/{}/msg/{}", &app_id, &msg.id),
+                &format!("api/v1/app/{}/msg/{}/", &app_id, &msg.id),
                 StatusCode::OK,
             )
             .await
@@ -1813,7 +1839,7 @@ async fn test_endpoint_headers_manipulation() {
 
     let _: IgnoredResponse = client
         .patch(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             patched_headers_in,
             StatusCode::NO_CONTENT,
         )
@@ -1822,7 +1848,7 @@ async fn test_endpoint_headers_manipulation() {
 
     let recvd_headers: EndpointHeadersOut = client
         .get(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             StatusCode::OK,
         )
         .await
@@ -1847,7 +1873,7 @@ async fn test_endpoint_headers_manipulation() {
     ] {
         let _: IgnoredResponse = client
             .put(
-                &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+                &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
                 serde_json::json!({ "headers": { bad_hdr: "123"}}),
                 StatusCode::UNPROCESSABLE_ENTITY,
             )
@@ -1872,7 +1898,7 @@ async fn test_endpoint_headers_manipulation() {
     for hdrs in [&org_headers, &updated_headers] {
         let _: IgnoredResponse = client
             .put(
-                &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+                &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
                 hdrs,
                 StatusCode::NO_CONTENT,
             )
@@ -1881,7 +1907,7 @@ async fn test_endpoint_headers_manipulation() {
 
         let recvd_headers: EndpointHeadersOut = client
             .get(
-                &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+                &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
                 StatusCode::OK,
             )
             .await
@@ -1899,7 +1925,7 @@ async fn test_endpoint_headers_manipulation() {
 
     let _: IgnoredResponse = client
         .patch(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             &patched_headers_in,
             StatusCode::NO_CONTENT,
         )
@@ -1908,7 +1934,7 @@ async fn test_endpoint_headers_manipulation() {
 
     let recvd_headers: EndpointHeadersOut = client
         .get(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             StatusCode::OK,
         )
         .await
@@ -1931,7 +1957,7 @@ async fn test_endpoint_headers_manipulation() {
 
     let _: IgnoredResponse = client
         .put(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             redacted_headers,
             StatusCode::NO_CONTENT,
         )
@@ -1940,7 +1966,7 @@ async fn test_endpoint_headers_manipulation() {
 
     let recvd_headers: EndpointHeadersOut = client
         .get(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             StatusCode::OK,
         )
         .await
@@ -1978,7 +2004,7 @@ async fn test_endpoint_headers_sending() {
 
     let _: IgnoredResponse = client
         .put(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             &headers,
             StatusCode::NO_CONTENT,
         )
@@ -2017,7 +2043,7 @@ async fn test_endpoint_header_key_capitalization() {
 
     let _: IgnoredResponse = client
         .put(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             &headers,
             StatusCode::NO_CONTENT,
         )
@@ -2026,7 +2052,7 @@ async fn test_endpoint_header_key_capitalization() {
 
     let retrieved_headers: EndpointHeadersOut = client
         .get(
-            &format!("api/v1/app/{}/endpoint/{}/headers", app_id, endp.id),
+            &format!("api/v1/app/{}/endpoint/{}/headers/", app_id, endp.id),
             StatusCode::OK,
         )
         .await
@@ -2053,7 +2079,7 @@ async fn test_endpoint_https_only() {
 
     let _endpoint: EndpointOut = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             endpoint_in(https_url),
             StatusCode::CREATED,
         )
@@ -2062,7 +2088,7 @@ async fn test_endpoint_https_only() {
 
     let _endpoint: EndpointOut = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             endpoint_in(http_url),
             StatusCode::CREATED,
         )
@@ -2080,7 +2106,7 @@ async fn test_endpoint_https_only() {
 
     let _endpoint: EndpointOut = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             endpoint_in(https_url),
             StatusCode::CREATED,
         )
@@ -2089,7 +2115,7 @@ async fn test_endpoint_https_only() {
 
     let _: IgnoredResponse = client
         .post(
-            &format!("api/v1/app/{}/endpoint/", app_id),
+            &format!("api/v1/app/{app_id}/endpoint/"),
             endpoint_in(http_url),
             StatusCode::UNPROCESSABLE_ENTITY,
         )
