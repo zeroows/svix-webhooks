@@ -1,22 +1,30 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-use crate::utils::common_calls::metadata;
+use crate::utils::common_calls::{default_test_endpoint, metadata};
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use ed25519_compact::Signature;
-use reqwest::StatusCode;
-use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement};
+use reqwest::{StatusCode, Url};
+use sea_orm::{
+    ActiveModelBehavior, ActiveModelTrait, ConnectionTrait, DatabaseBackend, QueryResult, Set,
+    Statement,
+};
 use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     time::Duration,
 };
+use svix_server::db::models::{message, messagedestination};
+use svix_server::v1::endpoints::endpoint::EndpointStatsOut;
+use svix_server::v1::endpoints::message::RawPayload;
 
 use serde::Deserialize;
 use svix::webhooks::Webhook;
 use svix_server::cfg::DefaultSignatureType;
-use svix_server::core::types::{BaseId, OrganizationId};
+use svix_server::core::types::{
+    BaseId, EndpointId, MessageEndpointId, MessageId, MessageStatus, OrganizationId,
+};
 use svix_server::{
     core::{
         cryptography::{AsymmetricKey, Encryption},
@@ -123,7 +131,7 @@ async fn test_patch() {
     // Assert that no other changes were made
     assert_eq!(out.ep.rate_limit, None);
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url/".to_owned());
     assert_eq!(out.ep.version, 1);
     assert!(!out.ep.disabled);
     assert_eq!(out.ep.event_types_ids, None);
@@ -150,7 +158,7 @@ async fn test_patch() {
     // Assert that no other changes were made
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url/".to_owned());
     assert_eq!(out.ep.version, 1);
     assert!(!out.ep.disabled);
     assert_eq!(out.ep.event_types_ids, None);
@@ -177,7 +185,7 @@ async fn test_patch() {
     // Assert that no other changes were made
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url/".to_owned());
     assert_eq!(out.ep.version, 1);
     assert!(!out.ep.disabled);
     assert_eq!(out.ep.event_types_ids, None);
@@ -204,7 +212,7 @@ async fn test_patch() {
     // Assert that no other changes were made
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
-    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url/".to_owned());
     assert_eq!(out.ep.version, 1);
     assert!(!out.ep.disabled);
     assert_eq!(out.ep.event_types_ids, None);
@@ -231,7 +239,7 @@ async fn test_patch() {
     // Assert that no other changes were made
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
-    assert_eq!(out.ep.url, "http://bad.url".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url/".to_owned());
     assert_eq!(out.ep.version, 1);
     assert!(!out.ep.disabled);
     assert_eq!(out.ep.event_types_ids, None);
@@ -254,7 +262,7 @@ async fn test_patch() {
         .get::<EndpointOut>(&url, StatusCode::OK)
         .await
         .unwrap();
-    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url2/".to_owned());
     // Assert that no other changes were made
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
@@ -286,7 +294,7 @@ async fn test_patch() {
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url2/".to_owned());
     assert!(!out.ep.disabled);
     assert_eq!(out.ep.event_types_ids, None);
     assert_eq!(out.ep.channels, None);
@@ -313,7 +321,7 @@ async fn test_patch() {
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url2/".to_owned());
     assert_eq!(out.ep.version, 2);
     assert_eq!(out.ep.event_types_ids, None);
     assert_eq!(out.ep.channels, None);
@@ -359,7 +367,7 @@ async fn test_patch() {
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url2/".to_owned());
     assert_eq!(out.ep.version, 2);
     assert!(out.ep.disabled);
     assert_eq!(out.ep.channels, None);
@@ -386,7 +394,7 @@ async fn test_patch() {
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url2/".to_owned());
     assert_eq!(out.ep.version, 2);
     assert!(out.ep.disabled);
     assert_eq!(out.ep.channels, None);
@@ -418,7 +426,7 @@ async fn test_patch() {
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url2/".to_owned());
     assert_eq!(out.ep.version, 2);
     assert!(out.ep.disabled);
     assert_eq!(out.ep.event_types_ids, None);
@@ -445,7 +453,7 @@ async fn test_patch() {
     assert_eq!(out.ep.description, "test".to_owned());
     assert_eq!(out.ep.rate_limit, None);
     assert_eq!(out.ep.uid, None);
-    assert_eq!(out.ep.url, "http://bad.url2".to_owned());
+    assert_eq!(out.ep.url, "http://bad.url2/".to_owned());
     assert_eq!(out.ep.version, 2);
     assert!(out.ep.disabled);
     assert_eq!(out.ep.event_types_ids, None);
@@ -458,11 +466,11 @@ async fn test_crud() {
     const APP_NAME_1: &str = "v1EndpointCrudTestApp1";
     const APP_NAME_2: &str = "v1EndpointCrudTestApp2";
 
-    const EP_URI_APP_1_EP_1_VER_1: &str = "http://v1EndpointCrudTestApp1Ep1Ver1.test";
-    const EP_URI_APP_1_EP_1_VER_2: &str = "http://v1EndpointCrudTestApp1Ep1Ver2.test";
-    const EP_URI_APP_1_EP_2: &str = "http://v1EndpointCrudTestApp1Ep2.test";
-    const EP_URI_APP_2_EP_1: &str = "http://v1EndpointCrudTestApp2Ep1.test";
-    const EP_URI_APP_2_EP_2: &str = "http://v1EndpointCrudTestApp2Ep2.test";
+    const EP_URI_APP_1_EP_1_VER_1: &str = "http://v1EndpointCrudTestApp1Ep1Ver1.test/foo";
+    const EP_URI_APP_1_EP_1_VER_2: &str = "http://v1EndpointCrudTestApp1Ep1Ver2.test/";
+    const EP_URI_APP_1_EP_2: &str = "http://v1EndpointCrudTestApp1Ep2.test/";
+    const EP_URI_APP_2_EP_1: &str = "http://v1EndpointCrudTestApp2Ep1.test/";
+    const EP_URI_APP_2_EP_2: &str = "http://v1EndpointCrudTestApp2Ep2.test/";
 
     let app_1 = create_test_app(&client, APP_NAME_1).await.unwrap().id;
     let app_2 = create_test_app(&client, APP_NAME_2).await.unwrap().id;
@@ -471,25 +479,25 @@ async fn test_crud() {
     let app_1_ep_1 = create_test_endpoint(&client, &app_1, EP_URI_APP_1_EP_1_VER_1)
         .await
         .unwrap();
-    assert_eq!(app_1_ep_1.ep.url, EP_URI_APP_1_EP_1_VER_1);
+    assert_eq!(app_1_ep_1.ep.url, EP_URI_APP_1_EP_1_VER_1.to_lowercase());
     assert_eq!(app_1_ep_1.ep.version, 1);
 
     let app_1_ep_2 = create_test_endpoint(&client, &app_1, EP_URI_APP_1_EP_2)
         .await
         .unwrap();
-    assert_eq!(app_1_ep_2.ep.url, EP_URI_APP_1_EP_2);
+    assert_eq!(app_1_ep_2.ep.url, EP_URI_APP_1_EP_2.to_lowercase());
     assert_eq!(app_1_ep_2.ep.version, 1);
 
     let app_2_ep_1 = create_test_endpoint(&client, &app_2, EP_URI_APP_2_EP_1)
         .await
         .unwrap();
-    assert_eq!(app_2_ep_1.ep.url, EP_URI_APP_2_EP_1);
+    assert_eq!(app_2_ep_1.ep.url, EP_URI_APP_2_EP_1.to_lowercase());
     assert_eq!(app_2_ep_1.ep.version, 1);
 
     let app_2_ep_2 = create_test_endpoint(&client, &app_2, EP_URI_APP_2_EP_2)
         .await
         .unwrap();
-    assert_eq!(app_2_ep_2.ep.url, EP_URI_APP_2_EP_2);
+    assert_eq!(app_2_ep_2.ep.url, EP_URI_APP_2_EP_2.to_lowercase());
     assert_eq!(app_2_ep_2.ep.version, 1);
 
     // READ
@@ -536,7 +544,7 @@ async fn test_crud() {
         )
         .await
         .unwrap();
-    assert_eq!(app_1_ep_1.ep.url, EP_URI_APP_1_EP_1_VER_2);
+    assert_eq!(app_1_ep_1.ep.url, EP_URI_APP_1_EP_1_VER_2.to_lowercase());
 
     // CONFIRM UPDATE
     assert_eq!(
@@ -636,10 +644,119 @@ async fn test_list() {
         &client,
         &format!("api/v1/app/{app_id}/endpoint/"),
         |i| endpoint_in(&format!("https://localhost/{i}")),
+        false,
         true,
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn test_endpoint_list_ordering() {
+    let (client, _jh) = start_svix_server().await;
+
+    let app_id = create_test_app(&client, "App1").await.unwrap().id;
+
+    for i in 0..5 {
+        create_test_endpoint(&client, &app_id, &format!("https://test.url/{i}"))
+            .await
+            .unwrap();
+        // Sleep to account for ksuid 4ms resolution
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let first_list: ListResponse<EndpointOut> = client
+        .get(
+            &format!("api/v1/app/{}/endpoint/?limit=2", &app_id),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    // First iterate through in order
+    assert_eq!(
+        first_list.data.first().unwrap().ep.url,
+        "https://test.url/4"
+    );
+    assert_eq!(first_list.data.last().unwrap().ep.url, "https://test.url/3");
+    assert!(!first_list.done);
+
+    let list: ListResponse<EndpointOut> = client
+        .get(
+            &format!(
+                "api/v1/app/{}/endpoint/?limit=2&iterator={}",
+                &app_id,
+                first_list.iterator.unwrap()
+            ),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list.data.first().unwrap().ep.url, "https://test.url/2");
+    assert_eq!(list.data.last().unwrap().ep.url, "https://test.url/1");
+    assert!(!list.done);
+
+    // Iterate with previous iterator
+    let list: ListResponse<EndpointOut> = client
+        .get(
+            &format!(
+                "api/v1/app/{}/endpoint/?iterator={}",
+                &app_id,
+                list.prev_iterator.unwrap()
+            ),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list.data.first().unwrap().ep.url, "https://test.url/4");
+    assert_eq!(list.data.last().unwrap().ep.url, "https://test.url/3");
+    assert!(list.done);
+
+    // Iterate in ascending order
+    let list: ListResponse<EndpointOut> = client
+        .get(
+            &format!("api/v1/app/{}/endpoint/?limit=3&order=ascending", &app_id),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list.data.first().unwrap().ep.url, "https://test.url/0");
+    assert_eq!(list.data.last().unwrap().ep.url, "https://test.url/2");
+    assert!(!list.done);
+
+    let list: ListResponse<EndpointOut> = client
+        .get(
+            &format!(
+                "api/v1/app/{}/endpoint/?limit=3&order=ascending&iterator={}",
+                &app_id,
+                list.iterator.unwrap(),
+            ),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list.data.first().unwrap().ep.url, "https://test.url/3");
+    assert_eq!(list.data.last().unwrap().ep.url, "https://test.url/4");
+    assert!(list.done);
+
+    // Previous iterator on descending order
+    let list: ListResponse<EndpointOut> = client
+        .get(
+            &format!(
+                "api/v1/app/{}/endpoint/?limit=2&order=ascending&iterator={}",
+                &app_id,
+                list.prev_iterator.unwrap(),
+            ),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.data.first().unwrap().ep.url, "https://test.url/1");
+    assert_eq!(list.data.last().unwrap().ep.url, "https://test.url/2");
 }
 
 /// Tests that there is at most one endpoint with a single UID for all endpoints associated with
@@ -839,10 +956,7 @@ async fn test_recovery_should_fail_if_start_time_too_old() {
 async fn test_recovery_expected_retry_counts() {
     let mut cfg = get_default_test_config();
 
-    cfg.retry_schedule = (0..2)
-        .into_iter()
-        .map(|_| Duration::from_millis(1))
-        .collect();
+    cfg.retry_schedule = (0..2).map(|_| Duration::from_millis(1)).collect();
 
     // total attempts for a failed message should be 1 (first attempt) + length of retry_schedule:
     let base_attempt_cnt = 1 + &cfg.retry_schedule.len();
@@ -868,6 +982,7 @@ async fn test_recovery_expected_retry_counts() {
         .await
         .unwrap();
 
+    tokio::time::sleep(Duration::from_millis(10)).await;
     let after_msg = Utc::now();
 
     // recovery time after msg -- should be no additional attempts
@@ -1030,10 +1145,9 @@ async fn test_endpoint_rotate_signing_symmetric_and_asymmetric() {
     let secret_3 = EndpointSecret::Symmetric(base64::decode("TUdfVE5UMnZlci1TeWxOYXQtX1ZlTW1kLTRtMFdhYmEwanIxdHJvenRCbmlTQ2hFdzBnbHhFbWdFaTJLdzQwSA==").unwrap());
 
     let ep_in = EndpointIn {
-        url: receiver.endpoint.clone(),
-        version: 1,
+        url: Url::parse(&receiver.endpoint).unwrap(),
         key: Some(secret_1.clone()),
-        ..Default::default()
+        ..default_test_endpoint()
     };
 
     let endp = post_endpoint(&client, &app_id, ep_in.clone())
@@ -1116,11 +1230,7 @@ async fn test_endpoint_secret_config() {
 
     let app_id = create_test_app(&client, "app1").await.unwrap().id;
 
-    let ep_in = EndpointIn {
-        url: "http://www.example.com".to_owned(),
-        version: 1,
-        ..Default::default()
-    };
+    let ep_in = default_test_endpoint();
 
     let ep = post_endpoint(&client, &app_id, ep_in.clone())
         .await
@@ -1184,10 +1294,8 @@ async fn test_custom_endpoint_secret() {
     );
 
     let mut ep_in = EndpointIn {
-        url: "http://www.example.com".to_owned(),
-        version: 1,
         key: Some(secret_1.clone()),
-        ..Default::default()
+        ..default_test_endpoint()
     };
 
     let endp_1 = post_endpoint(&client, &app_id, ep_in.clone())
@@ -1236,21 +1344,17 @@ async fn test_custom_endpoint_secret() {
 #[tokio::test]
 async fn test_endpoint_secret_encryption() {
     let org_id = OrganizationId::new(None, None);
-    let cfg = get_default_test_config();
-    let (client, _jh) = start_svix_server_with_cfg_and_org_id(&cfg, org_id.clone()).await;
 
     #[derive(Deserialize)]
     pub struct EndpointSecretOutTest {
         pub key: String,
     }
 
+    let cfg = get_default_test_config();
+    let (client, jh) = start_svix_server_with_cfg_and_org_id(&cfg, org_id.clone()).await;
     let app_id = create_test_app(&client, "app1").await.unwrap().id;
 
-    let ep_in = EndpointIn {
-        url: "http://www.example.com".to_owned(),
-        version: 1,
-        ..Default::default()
-    };
+    let ep_in = default_test_endpoint();
 
     let ep = post_endpoint(&client, &app_id, ep_in.clone())
         .await
@@ -1264,11 +1368,12 @@ async fn test_endpoint_secret_encryption() {
         .await
         .unwrap()
         .key;
+    jh.abort();
 
     // Now add encryption and check the secret is still fine
     let mut cfg = get_default_test_config();
     cfg.encryption = Encryption::new([1; 32]);
-    let (client, _jh) = start_svix_server_with_cfg_and_org_id(&cfg, org_id.clone()).await;
+    let (client, jh) = start_svix_server_with_cfg_and_org_id(&cfg, org_id.clone()).await;
 
     let secret2 = client
         .get::<EndpointSecretOutTest>(
@@ -1303,6 +1408,7 @@ async fn test_endpoint_secret_encryption() {
 
     // Ensure loading and saving works for encrypted
     assert_eq!(secret, secret2);
+    jh.abort();
 
     // Make sure we can't read it with the secret unset
     let cfg = get_default_test_config();
@@ -1346,6 +1452,147 @@ async fn test_invalid_endpoint_secret() {
     }
 }
 
+fn new_message_dest_at_time(
+    timestamp: DateTime<Utc>,
+    status: MessageStatus,
+    endp_id: &EndpointId,
+    msg_id: &MessageId,
+) -> messagedestination::ActiveModel {
+    messagedestination::ActiveModel {
+        endp_id: Set(endp_id.clone()),
+        msg_id: Set(msg_id.clone()),
+        id: Set(MessageEndpointId::new(timestamp.into(), None)),
+        status: Set(status),
+        created_at: Set(timestamp.into()),
+        updated_at: Set(timestamp.into()),
+        ..ActiveModelTrait::default()
+    }
+}
+
+#[tokio::test]
+async fn test_endpoint_stats() {
+    let (client, _jh) = start_svix_server().await;
+
+    let app_id = create_test_app(&client, "app1").await.unwrap().id;
+
+    let endp_id = create_test_endpoint(&client, &app_id, "https://gabagool.deli")
+        .await
+        .unwrap()
+        .id;
+
+    let stats: EndpointStatsOut = client
+        .get(
+            &format!("api/v1/app/{app_id}/endpoint/{endp_id}/stats/"),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stats.fail, 0);
+    assert_eq!(stats.success, 0);
+    assert_eq!(stats.pending, 0);
+    assert_eq!(stats.sending, 0);
+
+    let last_msg_time = {
+        // Create the relevant Stats records manually, otherwise
+        // it's difficult to test exact state of messagedestinations.
+
+        let cfg = get_default_test_config();
+        let db = Arc::new(cfg);
+        let db = svix_server::db::init_db(&db).await;
+
+        let now = Utc::now();
+
+        let msg = message::ActiveModel {
+            app_id: Set(app_id.clone()),
+            org_id: Set(OrganizationId::new(None, None)),
+            expiration: Set(Utc::now().into()),
+            event_type: Set(EventTypeName("test.ing".into())),
+            created_at: Set((now - chrono::Duration::minutes(65)).into()),
+            id: Set(MessageId::new(
+                (now - chrono::Duration::minutes(65)).into(),
+                None,
+            )),
+            ..message::ActiveModel::new()
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        new_message_dest_at_time(
+            now - chrono::Duration::minutes(60),
+            MessageStatus::Pending,
+            &endp_id,
+            &msg.id,
+        )
+        .insert(&db)
+        .await
+        .unwrap();
+
+        new_message_dest_at_time(
+            now - chrono::Duration::minutes(45),
+            MessageStatus::Pending,
+            &endp_id,
+            &msg.id,
+        )
+        .insert(&db)
+        .await
+        .unwrap();
+
+        new_message_dest_at_time(
+            now - chrono::Duration::minutes(30),
+            MessageStatus::Sending,
+            &endp_id,
+            &msg.id,
+        )
+        .insert(&db)
+        .await
+        .unwrap()
+        .created_at
+    };
+
+    let stats: EndpointStatsOut = client
+        .get(
+            &format!("api/v1/app/{app_id}/endpoint/{endp_id}/stats/"),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stats.fail, 0);
+    assert_eq!(stats.success, 0);
+    assert_eq!(stats.pending, 2);
+    assert_eq!(stats.sending, 1);
+
+    let stats_filtered: EndpointStatsOut = client
+        .get(
+            &format!(
+                "api/v1/app/{app_id}/endpoint/{endp_id}/stats/?since={}&until={}",
+                urlencoding::encode(&last_msg_time.to_rfc3339()),
+                urlencoding::encode(&Utc::now().to_rfc3339()),
+            ),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stats_filtered.fail, 0);
+    assert_eq!(stats_filtered.success, 0);
+    assert_eq!(stats_filtered.pending, 0);
+    assert_eq!(stats_filtered.sending, 1);
+
+    let _: IgnoredResponse = client
+        .get(
+            &format!(
+                "api/v1/app/{app_id}/endpoint/{endp_id}/stats/?since={}",
+                urlencoding::encode(&(Utc::now() - chrono::Duration::days(29)).to_rfc3339()),
+            ),
+            StatusCode::BAD_REQUEST,
+        )
+        .await
+        .unwrap();
+}
+
 /// We used to store the secret in the DB without a type marker, check loading those still works
 #[tokio::test]
 async fn test_legacy_endpoint_secret() {
@@ -1365,10 +1612,8 @@ async fn test_legacy_endpoint_secret() {
     let secret_1 = EndpointSecret::Symmetric(raw_key.clone());
 
     let ep_in = EndpointIn {
-        url: "http://www.example.com".to_owned(),
-        version: 1,
         key: Some(secret_throwaway.clone()),
-        ..Default::default()
+        ..default_test_endpoint()
     };
 
     let endp_1 = post_endpoint(&client, &app_id, ep_in.clone())
@@ -1416,11 +1661,7 @@ async fn test_endpoint_secret_encryption_in_database() {
 
     let app_id = create_test_app(&client, "app1").await.unwrap().id;
 
-    let ep_in = EndpointIn {
-        url: "http://www.example.com".to_owned(),
-        version: 1,
-        ..Default::default()
-    };
+    let ep_in = default_test_endpoint();
 
     let ep = post_endpoint(&client, &app_id, ep_in.clone())
         .await
@@ -1441,11 +1682,7 @@ async fn test_endpoint_secret_encryption_in_database() {
 
     let app_id = create_test_app(&client, "app1").await.unwrap().id;
 
-    let ep_in = EndpointIn {
-        url: "http://www.example.com".to_owned(),
-        version: 1,
-        ..Default::default()
-    };
+    let ep_in = default_test_endpoint();
 
     let ep = post_endpoint(&client, &app_id, ep_in.clone())
         .await
@@ -1658,10 +1895,8 @@ async fn test_rate_limit() {
     let app_id = create_test_app(&client, "app1").await.unwrap().id;
 
     let ep_in = EndpointIn {
-        url: "http://www.example.com".to_owned(),
-        version: 1,
         rate_limit: Some(100),
-        ..Default::default()
+        ..default_test_endpoint()
     };
 
     let endp = post_endpoint(&client, &app_id, ep_in.clone())
@@ -1721,10 +1956,9 @@ async fn test_msg_event_types_filter() {
             &client,
             &app_id,
             EndpointIn {
-                url: receiver.endpoint.to_owned(),
-                version: 1,
+                url: Url::parse(&receiver.endpoint).unwrap(),
                 event_types_ids: event_types,
-                ..Default::default()
+                ..default_test_endpoint()
             },
         )
         .await
@@ -1742,7 +1976,7 @@ async fn test_msg_event_types_filter() {
                 MessageIn {
                     channels: None,
                     event_type: event_name,
-                    payload: serde_json::json!({}),
+                    payload: RawPayload::from_string("{}".to_string()).unwrap(),
                     uid: None,
                     payload_retention_period: 5,
                 },
@@ -1775,10 +2009,9 @@ async fn test_msg_channels_filter() {
             &client,
             &app_id,
             EndpointIn {
-                url: receiver.endpoint.to_owned(),
-                version: 1,
                 channels,
-                ..Default::default()
+                url: Url::parse(&receiver.endpoint).unwrap(),
+                ..default_test_endpoint()
             },
         )
         .await
@@ -1792,7 +2025,7 @@ async fn test_msg_channels_filter() {
                 MessageIn {
                     channels: channels.clone(),
                     event_type: EventTypeName("et1".to_owned()),
-                    payload: serde_json::json!({}),
+                    payload: RawPayload::from_string("{}".to_string()).unwrap(),
                     uid: None,
                     payload_retention_period: 5,
                 },
@@ -1800,8 +2033,6 @@ async fn test_msg_channels_filter() {
             )
             .await
             .unwrap();
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let _list =
             get_msg_attempt_list_and_assert_count(&client, &app_id, &msg.id, expected_count)
@@ -2121,4 +2352,30 @@ async fn test_endpoint_https_only() {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn test_send_example() {
+    let cfg = get_default_test_config();
+    let (client, _jh) = start_svix_server_with_cfg(&cfg).await;
+
+    let mut receiver = TestReceiver::start(StatusCode::OK);
+
+    let app_id = create_test_app(&client, "Test App").await.unwrap().id;
+    let endp_id = create_test_endpoint(&client, &app_id, &receiver.endpoint)
+        .await
+        .unwrap()
+        .id;
+
+    let _: IgnoredResponse = client
+        .post(
+            &format!("api/v1/app/{app_id}/endpoint/{endp_id}/send-example/"),
+            serde_json::json!({"eventType": "svix.ping"}),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    let msg = receiver.data_recv.recv().await.unwrap();
+    assert_eq!(msg, serde_json::json!({"success": true}));
 }

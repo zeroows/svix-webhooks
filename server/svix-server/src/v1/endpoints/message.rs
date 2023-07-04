@@ -2,41 +2,48 @@
 // SPDX-License-Identifier: MIT
 
 use crate::{
-    cache::Cache,
     core::{
+        cache::Cache,
         message_app::CreateMessageApp,
         permissions,
         types::{
-            ApplicationIdOrUid, EventChannel, EventChannelSet, EventTypeName, EventTypeNameSet,
-            MessageAttemptTriggerType, MessageId, MessageIdOrUid, MessageUid,
+            EndpointId, EventChannel, EventChannelSet, EventTypeName, EventTypeNameSet,
+            MessageAttemptTriggerType, MessageId, MessageUid,
         },
     },
-    ctx, err_generic,
+    ctx,
+    db::models::application,
+    err_generic,
     error::{HttpError, Result},
     queue::{MessageTaskBatch, TaskQueueProducer},
     v1::utils::{
-        apply_pagination, iterator_from_before_or_after, validation_error, ListResponse,
-        MessageListFetchOptions, ModelIn, ModelOut, PaginationLimit, ReversibleIterator,
-        ValidatedJson, ValidatedQuery,
+        apply_pagination_desc, iterator_from_before_or_after, openapi_tag, validation_error,
+        ApplicationMsgPath, EventTypesQueryParams, JsonStatus, ListResponse, ModelIn, ModelOut,
+        PaginationDescending, PaginationLimit, ReversibleIterator, ValidatedJson, ValidatedQuery,
     },
+    AppState,
+};
+use aide::axum::{
+    routing::{delete_with, get_with, post_with},
+    ApiRouter,
 };
 use axum::{
-    extract::{Extension, Path},
-    routing::{get, post},
-    Json, Router,
+    extract::{Path, State},
+    Json,
 };
 use chrono::{DateTime, Duration, Utc};
 use hyper::StatusCode;
-use sea_orm::entity::prelude::*;
+use schemars::JsonSchema;
+use sea_orm::ActiveModelTrait;
+use sea_orm::{entity::prelude::*, IntoActiveModel};
 use sea_orm::{sea_query::Expr, ActiveValue::Set};
-use sea_orm::{ActiveModelTrait, DatabaseConnection};
 use serde::{Deserialize, Serialize};
 
-use svix_server_derive::{ModelIn, ModelOut};
+use serde_json::value::RawValue;
+use svix_server_derive::{aide_annotate, ModelIn, ModelOut};
 use validator::{Validate, ValidationError};
 
 use crate::db::models::message;
-use crate::v1::utils::Pagination;
 
 pub fn validate_channels_msg(
     channels: &EventChannelSet,
@@ -52,36 +59,85 @@ pub fn validate_channels_msg(
     }
 }
 
-pub fn validate_message_in_payload(
-    payload: &serde_json::Value,
-) -> std::result::Result<(), ValidationError> {
-    match payload {
-        serde_json::Value::Object(_) => Ok(()),
-        _ => Err(validation_error(
-            Some("payload"),
-            Some("Payload must be an object."),
-        )),
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RawPayload(pub Box<RawValue>);
+
+impl JsonSchema for RawPayload {
+    fn schema_name() -> String {
+        "RawPayload".to_string()
+    }
+
+    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        serde_json::Value::json_schema(gen)
+    }
+
+    fn is_referenceable() -> bool {
+        false
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Validate, ModelIn)]
+impl Eq for RawPayload {}
+
+impl PartialEq for RawPayload {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.get() == other.0.get()
+    }
+}
+
+impl RawPayload {
+    pub fn from_string(val: String) -> serde_json::Result<Self> {
+        Ok(Self(RawValue::from_string(val)?))
+    }
+}
+
+pub fn validate_raw_payload_is_object(
+    payload: &RawPayload,
+) -> std::result::Result<(), ValidationError> {
+    // Verify it's an object/map
+    if payload.0.get().starts_with('{') {
+        Ok(())
+    } else {
+        Err(validation_error(
+            Some("payload"),
+            Some("Payload must be an object."),
+        ))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Validate, ModelIn, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageIn {
+    /// Optional unique identifier for the message
     #[validate]
     #[serde(rename = "eventId", skip_serializing_if = "Option::is_none")]
     pub uid: Option<MessageUid>,
     #[validate]
     pub event_type: EventTypeName,
-    #[validate(custom = "validate_message_in_payload")]
+    #[validate(custom = "validate_raw_payload_is_object")]
     #[serde(alias = "payload", alias = "data")]
-    pub payload: serde_json::Value,
+    #[schemars(example = "example_payload")]
+    pub payload: RawPayload,
+    /// List of free-form identifiers that endpoints can filter by
     #[validate(custom = "validate_channels_msg")]
     #[validate]
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(example = "example_channel_set", length(min = 1, max = 5))]
     pub channels: Option<EventChannelSet>,
     #[validate(range(min = 5, max = 90))]
     #[serde(default = "default_90")]
+    #[schemars(example = "default_90")]
     pub payload_retention_period: i64,
+}
+
+fn example_channel_set() -> Vec<&'static str> {
+    vec!["project_123", "group_2"]
+}
+
+fn example_payload() -> serde_json::Value {
+    serde_json::json!({
+        "email": "test@example.com",
+        "username": "test_user"
+    })
 }
 
 // FIXME: This can and should be a derive macro
@@ -100,20 +156,26 @@ impl ModelIn for MessageIn {
         let expiration = Utc::now() + Duration::days(payload_retention_period);
 
         model.uid = Set(uid);
-        model.payload = Set(Some(payload));
+        model.payload = Set(Some(
+            serde_json::from_str(payload.0.get()).expect("It has to be valid"),
+        ));
         model.event_type = Set(event_type);
         model.expiration = Set(expiration.with_timezone(&Utc).into());
         model.channels = Set(channels);
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ModelOut)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ModelOut, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageOut {
+    /// Optional unique identifier for the message
     #[serde(rename = "eventId")]
     pub uid: Option<MessageUid>,
     pub event_type: EventTypeName,
-    pub payload: serde_json::Value,
+    #[schemars(example = "example_payload")]
+    pub payload: RawPayload,
+    /// List of free-form identifiers that endpoints can filter by
+    #[schemars(length(min = 1, max = 5), example = "example_channel_set")]
     pub channels: Option<EventChannelSet>,
     pub id: MessageId,
     #[serde(rename = "timestamp")]
@@ -123,7 +185,7 @@ pub struct MessageOut {
 impl MessageOut {
     fn without_payload(model: message::Model) -> Self {
         Self {
-            payload: serde_json::json!({}),
+            payload: RawPayload::from_string("{}".to_string()).expect("Can never fail"),
             ..model.into()
         }
     }
@@ -135,10 +197,11 @@ impl From<message::Model> for MessageOut {
         Self {
             uid: model.uid,
             event_type: model.event_type,
-            payload: match model.payload {
-                Some(payload) => payload,
-                None => serde_json::json!({ "expired": true }),
-            },
+            payload: RawPayload::from_string(match model.payload {
+                Some(payload) => serde_json::to_string(&payload).expect("Can never fail"),
+                None => r#"{"expired":true}"#.to_string(),
+            })
+            .expect("Can never fail"),
             channels: model.channels,
             id: model.id,
             created_at: model.created_at.into(),
@@ -154,43 +217,51 @@ fn default_90() -> i64 {
     90
 }
 
-#[derive(Clone, Debug, Deserialize, Validate)]
+#[derive(Clone, Debug, Deserialize, Validate, JsonSchema)]
 pub struct ListMessagesQueryParams {
     #[validate]
     channel: Option<EventChannel>,
     #[serde(default = "default_true")]
     with_content: bool,
 
+    before: Option<DateTime<Utc>>,
     after: Option<DateTime<Utc>>,
 }
 
+/// List all of the application's messages.
+///
+/// The `before` parameter lets you filter all items created before a certain date and is ignored if an iterator is passed.
+/// The `after` parameter lets you filter all items created after a certain date and is ignored if an iterator is passed.
+/// `before` and `after` cannot be used simultaneously.
+#[aide_annotate(op_id = "v1.message.list")]
 async fn list_messages(
-    Extension(ref db): Extension<DatabaseConnection>,
-    ValidatedQuery(pagination): ValidatedQuery<Pagination<ReversibleIterator<MessageId>>>,
+    State(AppState { ref db, .. }): State<AppState>,
+    ValidatedQuery(pagination): ValidatedQuery<PaginationDescending<ReversibleIterator<MessageId>>>,
     ValidatedQuery(ListMessagesQueryParams {
         channel,
         with_content,
+        before,
         after,
     }): ValidatedQuery<ListMessagesQueryParams>,
-    list_filter: MessageListFetchOptions,
+    EventTypesQueryParams(event_types): EventTypesQueryParams,
     permissions::Application { app }: permissions::Application,
 ) -> Result<Json<ListResponse<MessageOut>>> {
     let PaginationLimit(limit) = pagination.limit;
 
     let mut query = message::Entity::secure_find(app.id);
 
-    if let Some(EventTypeNameSet(event_types)) = list_filter.event_types {
+    if let Some(EventTypeNameSet(event_types)) = event_types {
         query = query.filter(message::Column::EventType.is_in(event_types));
     }
 
     if let Some(channel) = channel {
-        query = query.filter(Expr::cust_with_values("channels ?? ?", vec![channel]));
+        query = query.filter(Expr::cust_with_values("channels @> $1", [channel.jsonb()]));
     }
 
-    let iterator = iterator_from_before_or_after(pagination.iterator, list_filter.before, after);
+    let iterator = iterator_from_before_or_after(pagination.iterator, before, after);
     let is_prev = matches!(iterator, Some(ReversibleIterator::Prev(_)));
 
-    let query = apply_pagination(query, message::Column::Id, limit, iterator);
+    let query = apply_pagination_desc(query, message::Column::Id, limit, iterator);
     let into = |x: message::Model| {
         if with_content {
             x.into()
@@ -199,37 +270,60 @@ async fn list_messages(
         }
     };
 
-    let out = if is_prev {
-        ctx!(query.all(db).await)?
-            .into_iter()
-            .rev()
-            .map(into)
-            .collect()
-    } else {
-        ctx!(query.all(db).await)?.into_iter().map(into).collect()
-    };
+    let out = ctx!(query.all(db).await)?.into_iter().map(into).collect();
 
-    Ok(Json(MessageOut::list_response(out, limit as usize, false)))
+    Ok(Json(MessageOut::list_response(
+        out,
+        limit as usize,
+        is_prev,
+    )))
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, JsonSchema)]
 pub struct CreateMessageQueryParams {
     #[serde(default = "default_true")]
     with_content: bool,
 }
 
+/// Creates a new message and dispatches it to all of the application's endpoints.
+///
+/// The `eventId` is an optional custom unique ID. It's verified to be unique only up to a day, after that no verification will be made.
+/// If a message with the same `eventId` already exists for any application in your environment, a 409 conflict error will be returned.
+///
+/// The `eventType` indicates the type and schema of the event. All messages of a certain `eventType` are expected to have the same schema. Endpoints can choose to only listen to specific event types.
+/// Messages can also have `channels`, which similar to event types let endpoints filter by them. Unlike event types, messages can have multiple channels, and channels don't imply a specific message content or schema.
+///
+/// The `payload` property is the webhook's body (the actual webhook message). Svix supports payload sizes of up to ~350kb, though it's generally a good idea to keep webhook payloads small, probably no larger than 40kb.
+#[aide_annotate(op_id = "v1.message.create")]
 async fn create_message(
-    Extension(ref db): Extension<DatabaseConnection>,
-    Extension(queue_tx): Extension<TaskQueueProducer>,
-    Extension(cache): Extension<Cache>,
+    State(AppState {
+        ref db,
+        queue_tx,
+        cache,
+        ..
+    }): State<AppState>,
     ValidatedQuery(CreateMessageQueryParams { with_content }): ValidatedQuery<
         CreateMessageQueryParams,
     >,
     permissions::OrganizationWithApplication { app }: permissions::OrganizationWithApplication,
     ValidatedJson(data): ValidatedJson<MessageIn>,
-) -> Result<(StatusCode, Json<MessageOut>)> {
+) -> Result<JsonStatus<202, MessageOut>> {
+    Ok(JsonStatus(
+        create_message_inner(db, queue_tx, cache, with_content, None, data, app).await?,
+    ))
+}
+
+pub(crate) async fn create_message_inner(
+    db: &DatabaseConnection,
+    queue_tx: TaskQueueProducer,
+    cache: Cache,
+    with_content: bool,
+    force_endpoint: Option<EndpointId>,
+    data: MessageIn,
+    app: application::Model,
+) -> Result<MessageOut> {
     let create_message_app = CreateMessageApp::layered_fetch(
-        cache,
+        &cache,
         db,
         Some(app.clone()),
         app.org_id.clone(),
@@ -257,6 +351,7 @@ async fn create_message(
                 MessageTaskBatch::new_task(
                     msg.id.clone(),
                     app.id.clone(),
+                    force_endpoint,
                     MessageAttemptTriggerType::Scheduled,
                 ),
                 None,
@@ -270,17 +365,20 @@ async fn create_message(
         MessageOut::without_payload(msg)
     };
 
-    Ok((StatusCode::ACCEPTED, Json(msg_out)))
+    Ok(msg_out)
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, JsonSchema)]
 pub struct GetMessageQueryParams {
     #[serde(default = "default_true")]
     with_content: bool,
 }
+
+/// Get a message by its ID or eventID.
+#[aide_annotate(op_id = "v1.message.get")]
 async fn get_message(
-    Extension(ref db): Extension<DatabaseConnection>,
-    Path((_app_id, msg_id)): Path<(ApplicationIdOrUid, MessageIdOrUid)>,
+    State(AppState { ref db, .. }): State<AppState>,
+    Path(ApplicationMsgPath { msg_id, .. }): Path<ApplicationMsgPath>,
     ValidatedQuery(GetMessageQueryParams { with_content }): ValidatedQuery<GetMessageQueryParams>,
     permissions::Application { app }: permissions::Application,
 ) -> Result<Json<MessageOut>> {
@@ -298,10 +396,48 @@ async fn get_message(
     Ok(Json(msg_out))
 }
 
-pub fn router() -> Router {
-    Router::new()
-        .route("/app/:app_id/msg/", post(create_message).get(list_messages))
-        .route("/app/:app_id/msg/:msg_id/", get(get_message))
+/// Delete the given message's payload. Useful in cases when a message was accidentally sent with sensitive content.
+///
+/// The message can't be replayed or resent once its payload has been deleted or expired.
+#[aide_annotate(op_id = "v1.message.expunge-content")]
+async fn expunge_message_content(
+    State(AppState { ref db, .. }): State<AppState>,
+    Path(ApplicationMsgPath { msg_id, .. }): Path<ApplicationMsgPath>,
+    permissions::OrganizationWithApplication { app }: permissions::OrganizationWithApplication,
+) -> Result<StatusCode> {
+    let mut msg = ctx!(
+        message::Entity::secure_find_by_id_or_uid(app.id, msg_id)
+            .one(db)
+            .await
+    )?
+    .ok_or_else(|| HttpError::not_found(None, None))?
+    .into_active_model();
+
+    msg.payload = Set(None);
+    ctx!(msg.update(db).await)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub fn router() -> ApiRouter<AppState> {
+    let tag = openapi_tag("Message");
+    ApiRouter::new()
+        .api_route_with(
+            "/app/:app_id/msg/",
+            post_with(create_message, create_message_operation)
+                .get_with(list_messages, list_messages_operation),
+            &tag,
+        )
+        .api_route_with(
+            "/app/:app_id/msg/:msg_id/",
+            get_with(get_message, get_message_operation),
+            &tag,
+        )
+        .api_route_with(
+            "/app/:app_id/msg/:msg_id/content/",
+            delete_with(expunge_message_content, expunge_message_content_operation),
+            tag,
+        )
 }
 
 #[cfg(test)]

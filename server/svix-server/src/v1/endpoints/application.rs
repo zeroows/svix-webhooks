@@ -4,42 +4,53 @@
 use crate::{
     core::{
         permissions,
-        types::{metadata::Metadata, ApplicationId, ApplicationIdOrUid, ApplicationUid},
+        types::{metadata::Metadata, ApplicationId, ApplicationUid},
     },
     ctx,
     db::models::{application, applicationmetadata},
-    error::{HttpError, Result},
+    error::{http_error_on_conflict, HttpError, Result},
     transaction,
     v1::utils::{
+        apply_pagination, openapi_tag,
         patch::{
             patch_field_non_nullable, patch_field_nullable, UnrequiredField,
             UnrequiredNullableField,
         },
         validate_no_control_characters, validate_no_control_characters_unrequired,
-        validation_error, EmptyResponse, ListResponse, ModelIn, ModelOut, Pagination,
-        PaginationLimit, ValidatedJson, ValidatedQuery,
+        validation_error, ApplicationPath, JsonStatusUpsert, ListResponse, ModelIn, ModelOut,
+        NoContent, Ordering, Pagination, PaginationLimit, ReversibleIterator, ValidatedJson,
+        ValidatedQuery,
     },
+    AppState,
+};
+use aide::axum::{
+    routing::{get_with, post_with},
+    ApiRouter,
 };
 use axum::{
-    extract::{Extension, Path},
-    routing::{get, post},
-    Json, Router,
+    extract::{Path, State},
+    Json,
 };
 use chrono::{DateTime, Utc};
-use hyper::StatusCode;
+use schemars::JsonSchema;
+use sea_orm::ActiveModelTrait;
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ActiveModelTrait, DatabaseConnection};
 use serde::{Deserialize, Serialize};
-use svix_server_derive::ModelOut;
+use svix_server_derive::{aide_annotate, ModelOut};
 use validator::{Validate, ValidationError};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Validate)]
+fn application_name_example() -> &'static str {
+    "My first application"
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationIn {
     #[validate(
         length(min = 1, message = "Application names must be at least one character"),
         custom = "validate_no_control_characters"
     )]
+    #[schemars(example = "application_name_example")]
     pub name: String,
 
     #[validate(range(min = 1, message = "Application rate limits must be at least 1 if set"))]
@@ -73,7 +84,7 @@ impl ModelIn for ApplicationIn {
     }
 }
 
-#[derive(Deserialize, Serialize, Validate)]
+#[derive(Deserialize, Serialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationPatch {
     #[serde(default, skip_serializing_if = "UnrequiredField::is_absent")]
@@ -153,12 +164,13 @@ fn validate_rate_limit_patch(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ModelOut)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ModelOut, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationOut {
     // FIXME: Do we want to use serde(flatten) or just duplicate the keys?
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uid: Option<ApplicationUid>,
+    #[schemars(example = "application_name_example")]
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<u16>,
@@ -183,22 +195,43 @@ impl From<(application::Model, applicationmetadata::Model)> for ApplicationOut {
     }
 }
 
+/// List of all the organization's applications.
+#[aide_annotate(op_id = "v1.application.list")]
 async fn list_applications(
-    Extension(ref db): Extension<DatabaseConnection>,
-    pagination: ValidatedQuery<Pagination<ApplicationId>>,
+    State(AppState { ref db, .. }): State<AppState>,
+    ValidatedQuery(pagination): ValidatedQuery<Pagination<ReversibleIterator<ApplicationId>>>,
     permissions::Organization { org_id }: permissions::Organization,
 ) -> Result<Json<ListResponse<ApplicationOut>>> {
     let PaginationLimit(limit) = pagination.limit;
-    let iterator = pagination.iterator.clone();
+    let iterator = pagination.iterator;
+    let is_prev = matches!(iterator, Some(ReversibleIterator::Prev(_)));
 
-    let apps =
-        ctx!(application::Model::fetch_many_with_metadata(db, org_id, limit + 1, iterator).await)?;
+    let query = apply_pagination(
+        application::Entity::secure_find(org_id),
+        application::Column::Id,
+        limit,
+        iterator,
+        pagination.order.unwrap_or(Ordering::Ascending),
+    );
 
-    let results = apps.map(ApplicationOut::from).collect();
+    let results: Vec<ApplicationOut> = ctx!(
+        query
+            .find_also_related(applicationmetadata::Entity)
+            .all(db)
+            .await
+    )?
+    .into_iter()
+    .map(|(app, metadata)| {
+        let metadata = metadata.unwrap_or_else(|| applicationmetadata::Model::new(app.id.clone()));
+        (app, metadata)
+    })
+    .map(ApplicationOut::from)
+    .collect();
 
-    Ok(Json(ApplicationOut::list_response_no_prev(
+    Ok(Json(ApplicationOut::list_response(
         results,
         limit as usize,
+        is_prev,
     )))
 }
 
@@ -206,24 +239,28 @@ fn default_as_false() -> bool {
     false
 }
 
-#[derive(Debug, Deserialize, Validate)]
-pub struct CreateApplicationQuery {
+#[derive(Debug, Deserialize, Validate, JsonSchema)]
+pub struct CreateApplicationQueryParams {
+    /// Get an existing application, or create a new one if doesn't exist. It's two separate functions in the libs.
     #[serde(default = "default_as_false")]
     get_if_exists: bool,
 }
 
+/// Create a new application.
+#[aide_annotate(op_id = "v1.application.create")]
 async fn create_application(
-    Extension(ref db): Extension<DatabaseConnection>,
-    query: ValidatedQuery<CreateApplicationQuery>,
+    State(AppState { ref db, .. }): State<AppState>,
+    query: ValidatedQuery<CreateApplicationQueryParams>,
     permissions::Organization { org_id }: permissions::Organization,
     ValidatedJson(data): ValidatedJson<ApplicationIn>,
-) -> Result<(StatusCode, Json<ApplicationOut>)> {
+) -> Result<JsonStatusUpsert<ApplicationOut>> {
     if let Some(ref uid) = data.uid {
         if let Some((app, metadata)) = ctx!(
             application::Model::fetch_with_metadata(db, org_id.clone(), uid.clone().into()).await
         )? {
             if query.get_if_exists {
-                return Ok((StatusCode::OK, Json((app, metadata).into())));
+                // Technically not updated, but it fits.
+                return Ok(JsonStatusUpsert::Updated((app, metadata).into()));
             }
             return Err(HttpError::conflict(
                 None,
@@ -241,26 +278,30 @@ async fn create_application(
     let (app, metadata) = model;
 
     let (app, metadata) = transaction!(db, |txn| async move {
-        let app_result = ctx!(app.insert(txn).await)?;
+        let app_result = ctx!(app.insert(txn).await.map_err(http_error_on_conflict))?;
         let metadata = ctx!(metadata.upsert_or_delete(txn).await)?;
         Ok((app_result, metadata))
     })?;
 
-    Ok((StatusCode::CREATED, Json((app, metadata).into())))
+    Ok(JsonStatusUpsert::Created((app, metadata).into()))
 }
 
+/// Get an application.
+#[aide_annotate(op_id = "v1.application.get")]
 async fn get_application(
     permissions::ApplicationWithMetadata { app, metadata }: permissions::ApplicationWithMetadata,
 ) -> Result<Json<ApplicationOut>> {
     Ok(Json((app, metadata).into()))
 }
 
+/// Update an application.
+#[aide_annotate(op_id = "v1.application.update")]
 async fn update_application(
-    Extension(ref db): Extension<DatabaseConnection>,
-    Path(app_id): Path<ApplicationIdOrUid>,
+    State(AppState { ref db, .. }): State<AppState>,
+    Path(ApplicationPath { app_id }): Path<ApplicationPath>,
     permissions::Organization { org_id }: permissions::Organization,
     ValidatedJson(data): ValidatedJson<ApplicationIn>,
-) -> Result<(StatusCode, Json<ApplicationOut>)> {
+) -> Result<JsonStatusUpsert<ApplicationOut>> {
     let (app, metadata, create_models) = if let Some((app, metadata)) =
         ctx!(application::Model::fetch_with_metadata(db, org_id.clone(), app_id).await)?
     {
@@ -277,24 +318,25 @@ async fn update_application(
 
     let (app, metadata) = transaction!(db, |txn| async move {
         let app = if create_models {
-            ctx!(app.insert(txn).await)?
+            ctx!(app.insert(txn).await.map_err(http_error_on_conflict))?
         } else {
-            ctx!(app.update(txn).await)?
+            ctx!(app.update(txn).await.map_err(http_error_on_conflict))?
         };
         let metadata = ctx!(metadata.upsert_or_delete(txn).await)?;
         Ok((app, metadata))
     })?;
 
-    let status = if create_models {
-        StatusCode::CREATED
+    if create_models {
+        Ok(JsonStatusUpsert::Created((app, metadata).into()))
     } else {
-        StatusCode::OK
-    };
-    Ok((status, Json((app, metadata).into())))
+        Ok(JsonStatusUpsert::Updated((app, metadata).into()))
+    }
 }
 
+/// Partially update an application.
+#[aide_annotate]
 async fn patch_application(
-    Extension(ref db): Extension<DatabaseConnection>,
+    State(AppState { ref db, .. }): State<AppState>,
     permissions::OrganizationWithApplication { app }: permissions::OrganizationWithApplication,
     ValidatedJson(data): ValidatedJson<ApplicationPatch>,
 ) -> Result<Json<ApplicationOut>> {
@@ -306,7 +348,7 @@ async fn patch_application(
     let (app, metadata) = model;
 
     let (app, metadata) = transaction!(db, |txn| async move {
-        let app = ctx!(app.update(txn).await)?;
+        let app = ctx!(app.update(txn).await.map_err(http_error_on_conflict))?;
         let metadata = ctx!(metadata.upsert_or_delete(txn).await)?;
         Ok((app, metadata))
     })?;
@@ -314,26 +356,35 @@ async fn patch_application(
     Ok(Json((app, metadata).into()))
 }
 
+/// Delete an application.
+#[aide_annotate(op_id = "v1.application.delete")]
 async fn delete_application(
-    Extension(ref db): Extension<DatabaseConnection>,
+    State(AppState { ref db, .. }): State<AppState>,
     permissions::OrganizationWithApplication { app }: permissions::OrganizationWithApplication,
-) -> Result<(StatusCode, Json<EmptyResponse>)> {
+) -> Result<NoContent> {
     let mut app: application::ActiveModel = app.into();
     app.deleted = Set(true);
     app.uid = Set(None); // We don't want deleted UIDs to clash
     ctx!(app.update(db).await)?;
-    Ok((StatusCode::NO_CONTENT, Json(EmptyResponse {})))
+    Ok(NoContent)
 }
 
-pub fn router() -> Router {
-    Router::new()
-        .route("/app/", post(create_application).get(list_applications))
-        .route(
+pub fn router() -> ApiRouter<AppState> {
+    let tag = openapi_tag("Application");
+    ApiRouter::new()
+        .api_route_with(
+            "/app/",
+            post_with(create_application, create_application_operation)
+                .get_with(list_applications, list_applications_operation),
+            &tag,
+        )
+        .api_route_with(
             "/app/:app_id/",
-            get(get_application)
-                .put(update_application)
-                .patch(patch_application)
-                .delete(delete_application),
+            get_with(get_application, get_application_operation)
+                .put_with(update_application, update_application_operation)
+                .patch_with(patch_application, patch_application_operation)
+                .delete_with(delete_application, delete_application_operation),
+            tag,
         )
 }
 

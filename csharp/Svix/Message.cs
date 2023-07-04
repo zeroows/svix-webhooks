@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -28,7 +29,7 @@ namespace Svix
             {
                 message = message ?? throw new ArgumentNullException(nameof(message));
 
-                var lApplication = _messageApi.CreateMessageApiV1AppAppIdMsgPost(
+                var lApplication = _messageApi.V1MessageCreate(
                     appId,
                     message,
                     options?.WithContent,
@@ -53,7 +54,7 @@ namespace Svix
             {
                 message = message ?? throw new ArgumentNullException(nameof(message));
 
-                var lApplication = await _messageApi.CreateMessageApiV1AppAppIdMsgPostAsync(
+                var lApplication = await _messageApi.V1MessageCreateAsync(
                     appId,
                     message,
                     options?.WithContent,
@@ -77,10 +78,9 @@ namespace Svix
         {
             try
             {
-                var lMessage = _messageApi.GetMessageApiV1AppAppIdMsgMsgIdGet(
-                    messageId,
+                var lMessage = _messageApi.V1MessageGet(
                     appId,
-                    idempotencyKey);
+                    messageId);
 
                 return lMessage;
             }
@@ -99,10 +99,9 @@ namespace Svix
         {
             try
             {
-                var lMessage = await _messageApi.GetMessageApiV1AppAppIdMsgMsgIdGetAsync(
-                    messageId,
+                var lMessage = await _messageApi.V1MessageGetAsync(
                     appId,
-                    idempotencyKey);
+                    messageId);
 
                 return lMessage;
             }
@@ -121,15 +120,16 @@ namespace Svix
         {
             try
             {
-                var lResponse = _messageApi.ListMessagesApiV1AppAppIdMsgGet(
+                var lResponse = _messageApi.V1MessageList(
                     appId,
-                    options?.Iterator,
                     options?.Limit,
-                    options?.EventTypes,
+                    options?.Iterator,
                     options?.Channel,
                     options?.Before,
                     options?.After,
-                    idempotencyKey);
+                    options?.WithContent,
+                    options?.EventTypes
+                    );
 
                 return lResponse?.Data;
             }
@@ -148,15 +148,15 @@ namespace Svix
         {
             try
             {
-                var lResponse = await _messageApi.ListMessagesApiV1AppAppIdMsgGetAsync(
+                var lResponse = await _messageApi.V1MessageListAsync(
                     appId,
-                    options?.Iterator,
                     options?.Limit,
-                    options?.EventTypes,
+                    options?.Iterator,
                     options?.Channel,
                     options?.Before,
                     options?.After,
-                    idempotencyKey,
+                    options?.WithContent,
+                    options?.EventTypes,
                     cancellationToken);
 
                 return lResponse?.Data;
@@ -169,6 +169,49 @@ namespace Svix
                     throw;
 
                 return new List<MessageOut>();
+            }
+        }
+
+        public bool ExpungeContent(string appId, string messageId, string idempotencyKey = default)
+        {
+            try
+            {
+                var lResponse = _messageApi.V1MessageExpungeContentWithHttpInfo(
+                    appId,
+                    messageId);
+
+                return lResponse.StatusCode == HttpStatusCode.NoContent;
+            }
+            catch (ApiException e)
+            {
+                Logger?.LogError(e, $"{nameof(ExpungeContent)} failed");
+
+                if (Throw)
+                    throw;
+
+                return false;
+            }
+        }
+
+        public async Task<bool> ExpungeContentAsync(string appId, string messageId, string idempotencyKey = default, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var lResponse = await _messageApi.V1MessageExpungeContentWithHttpInfoAsync(
+                    appId,
+                    messageId,
+                    cancellationToken);
+
+                return lResponse.StatusCode == HttpStatusCode.NoContent;
+            }
+            catch (ApiException e)
+            {
+                Logger?.LogError(e, $"{nameof(ExpungeContentAsync)} failed");
+
+                if (Throw)
+                    throw;
+
+                return false;
             }
         }
     }

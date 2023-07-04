@@ -3,6 +3,131 @@
 ## Next
 * 
 
+## Version 1.5.2
+* Libs/JavaScript: Fix regression in previous release and allow passing `Buffer` to sign/verify.
+
+## Version 1.5.1
+* Server: Implement the send-example route.
+* Libs/JavaScript: Add an explicit check that payload is a string.
+* Libs: Fix a bug with integration key creation.
+
+## Version 1.5.0
+* Server: update OpenSSL dep and fix an incredibly slow memory leak.
+* Libs/Go: support passing `WithContent` to `List Attepmted Messages`
+* Libs/Python: fix regression in Python library (causing some functions not to work).
+
+## Version 1.4.12
+* Sync OSS package version with our internal version.
+* Server: support comma separated array query params
+* Bridge: initial release
+* Libs: update OpenAPI spec
+* Libs: add support for "Background Task" endpoints
+* Libs: add support for since/until to endpoint stats
+* Libs/Go: add missing `endpoint_id` option to list attempts by msg.
+* Libs/JavaScript: add missing `withContent` field to `MessageListOptions`.
+* Libs/Rust: fix typo in error handling message
+
+## Version 0.85.1
+* Libs: update OpenAPI spec
+
+## Version 0.85.0
+* Server: add a missing migration for operational webhooks event types.
+* Libs/Ruby: fix the library failing to load due to missing dependency.
+* Libs: **[Semi-breaking]** we changed the return value of the transformation simulation endpoint. It's technically a breaking page, though the API is private so it shouldn't affect people.
+
+## Version 0.84.1
+* Libs: regenerate libs from the correct openapi spec (could have caused potential authentication issues)
+
+## Version 0.84.0
+* Server: add (beta) RabbitMQ implementation
+* Server: upgrade redis-rs and a few other dependencies
+* Server: improve OpenAPI generation
+* Server: fix issue with Redis being required in the docker image
+* Libs/Rust: support choosing the wanted TLS implementation
+
+## Version 0.83.1
+* Libs: update OpenAPI spec
+
+## Version 0.83.0
+* Server: bump deps
+* Libs: Add `send-example` wrapper to libraries
+* Libs/Go: alias missing types from internal dir / openapi package
+
+## Version 0.82.1
+* Libs/Java: serialize nulls when making HTTP requests
+
+## Version 0.82.0
+* Server: refactor expired message cleaner to be incremental (prevent locks)
+* Server: improve OpenAPI generation
+* Server: Fix handling of very large numbers in json (larger than i64)
+* Server: do not throw error on missing payload in worker
+* Server: update dependencies
+
+## Version 0.81.0
+* Libs: add support for creating application when creating a message
+* Libs/Go: bump Go version
+
+## Version 0.80.0
+* Libs: add `prev_iterator` and `order` support to application list
+* Libs: add `prev_iterator` support to event type list
+* Libs/C#: **[Breaking]** change default value for `SvixOptions.Throw` to `true`
+
+## Version 0.79.0
+* Server: support prev_iterator for application and event type listing
+* Server: fix returning of 409 (CONFLICT) when inserting/patching an application with a conflicting `uid`
+* Libs/Ruby: require (reexport) app portal models in ruby (fixing errors)
+* Libs/C#: fix MessageAttempt querying when not filtering by status and code
+
+## Version 0.78.0
+* Server: add `order` query parameter for sorting endpoints
+* Server: fix default sort order of endpoints to `desc` to match prod
+* Libs: add support for `prev_iterator` for application and endpoints
+* Libs/JS: fix sign function to support non-round dates
+* Libs/Go: **[Breaking]** accept a context parameter in all Go lib methods
+
+## Version 0.77.0
+* Server: fix event_type array query parsing
+* Server: fix bad `?channel=` queries
+* Server: fire operational webhook on endpoint secret rotation
+* Server: implement bidirectional pagination for endpoints
+* Libs/Rust: glob-reexport all generated models in Rust
+
+## Version 0.76.1
+* Server: fix `/attempt/endpoint`'s broken `?channel=` query
+* Libs/Rust: add missing exports to a few API endpoints
+* Libs: fix naming of replay-missing methods in libraries (all but Rust)
+
+## Version 0.76.0
+* Server: add org_id and app_id to main tracing span
+* Server: make `wait_for` timeout early and retry
+* Server: add since/until query params to endpoint stats
+* Server: add endpoints to expunge payload and response
+* Server: clarify error message and documentation around filtered IP addresses
+* Server: fix error message with endpoint filter types validation
+* Server: fix `?after=<time>` ID Parsing in paginated endpoints
+* Libs: add endpoints to expunge payload and response
+* Libs: add replay missing messages functions
+* Libs: add transformations APIs
+
+## Version 0.75.0
+* Server: add built in SSRF support (no need for an external proxy)
+* Server: many worker improvements (see #704 for details)
+* Server: fix Span HTTP Routes
+* Server: update deps
+* Server: add Length limit validation to EndpointHeader value
+* Server: add missing root CAs to default docker image
+* Server: add updated app-portal-access API endpoint (to replace the deprecated dashboard-access)
+* Server: add feature flag gating to event types
+* Libs/Rust: Enable TLS support in `reqwest` by default
+* Libs: support the new feature flag gating of event types
+
+## Version 0.74.1
+* Libs/Rust: make all `*Options` and fields public (missing from previous release)
+
+## Version 0.74.0
+* Libs/Rust: make `ListOptions` and `PostOptions` fields public
+* Libs/Rust: fix Webhook verification to accept &str
+
 ## Version 0.73.0
 * Server: fix issue with potentially incorrect signatures for very small payloads.
 * Server: fix Docker image to use `exec` so that svix-server will accept container process signals.

@@ -7,7 +7,7 @@ use svix_server::{
     core::types::{EndpointUid, MessageStatus},
     v1::{
         endpoints::{
-            attempt::{AttemptedMessageOut, MessageAttemptOut},
+            attempt::{EndpointMessageOut, MessageAttemptOut},
             endpoint::{EndpointIn, EndpointOut},
         },
         utils::ListResponse,
@@ -18,14 +18,75 @@ mod utils;
 
 use utils::{
     common_calls::{
-        create_test_app, create_test_endpoint, create_test_message, endpoint_in,
-        get_msg_attempt_list_and_assert_count,
+        create_test_app, create_test_endpoint, create_test_message, create_test_msg_with,
+        endpoint_in, get_msg_attempt_list_and_assert_count,
     },
     get_default_test_config, run_with_retries, start_svix_server, start_svix_server_with_cfg,
-    TestReceiver,
+    IgnoredResponse, TestReceiver,
 };
 
 use std::time::Duration;
+
+#[tokio::test]
+async fn test_expunge_attempt_response_body() {
+    let (client, _jh) = start_svix_server().await;
+
+    let app_id = create_test_app(&client, "app1").await.unwrap().id;
+
+    let sensitive_response_json = serde_json::json!({"sensitive":"data"});
+    let mut receiver = TestReceiver::start_with_body(
+        axum::http::StatusCode::OK,
+        axum::Json(sensitive_response_json.clone()),
+    );
+
+    let endpoint_id = create_test_endpoint(&client, &app_id, &receiver.endpoint)
+        .await
+        .unwrap()
+        .id;
+
+    let msg_id = create_test_message(&client, &app_id, serde_json::json!({"test": "data1"}))
+        .await
+        .unwrap()
+        .id;
+
+    receiver.data_recv.recv().await;
+
+    let attempt = run_with_retries(|| async {
+        let attempts: ListResponse<MessageAttemptOut> = client
+            .get(
+                &format!("api/v1/app/{app_id}/attempt/endpoint/{endpoint_id}/"),
+                StatusCode::OK,
+            )
+            .await
+            .unwrap();
+        assert_eq!(1, attempts.data.len());
+        Ok(attempts.data[0].clone())
+    })
+    .await
+    .unwrap();
+
+    let attempt_response: serde_json::Value = serde_json::from_str(&attempt.response).unwrap();
+    assert_eq!(sensitive_response_json, attempt_response);
+
+    let attempt_id = &attempt.id;
+    let _: IgnoredResponse = client
+        .delete(
+            &format!("api/v1/app/{app_id}/msg/{msg_id}/attempt/{attempt_id}/content/"),
+            StatusCode::NO_CONTENT,
+        )
+        .await
+        .unwrap();
+
+    let attempt: MessageAttemptOut = client
+        .get(
+            &format!("api/v1/app/{app_id}/msg/{msg_id}/attempt/{attempt_id}/"),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!("EXPUNGED", &attempt.response);
+}
 
 #[tokio::test]
 async fn test_list_attempted_messages() {
@@ -41,7 +102,7 @@ async fn test_list_attempted_messages() {
         .unwrap()
         .id;
 
-    // Let's have an endponit with a UID too
+    // Let's have an endpoint with a UID too
     let mut endp2 = endpoint_in(&receiver_2.endpoint);
     endp2.uid = Some(EndpointUid("test".to_owned()));
     let endp_id_2 = client
@@ -60,19 +121,24 @@ async fn test_list_attempted_messages() {
     let msg_2 = create_test_message(&client, &app_id, serde_json::json!({"test": "data2"}))
         .await
         .unwrap();
-    let msg_3 = create_test_message(&client, &app_id, serde_json::json!({"test": "data3"}))
-        .await
-        .unwrap();
+    let msg_3 = create_test_msg_with(
+        &client,
+        &app_id,
+        serde_json::json!({"test": "data3"}),
+        "balloon.popped",
+        ["news"],
+    )
+    .await;
 
     run_with_retries(|| async {
-        let list_1: ListResponse<AttemptedMessageOut> = client
+        let list_1: ListResponse<EndpointMessageOut> = client
             .get(
                 &format!("api/v1/app/{app_id}/endpoint/{endp_id_1}/msg/"),
                 StatusCode::OK,
             )
             .await
             .unwrap();
-        let list_2: ListResponse<AttemptedMessageOut> = client
+        let list_2: ListResponse<EndpointMessageOut> = client
             .get(
                 &format!("api/v1/app/{app_id}/endpoint/{endp_id_2}/msg/"),
                 StatusCode::OK,
@@ -80,7 +146,7 @@ async fn test_list_attempted_messages() {
             .await
             .unwrap();
 
-        let list_2_uid: ListResponse<AttemptedMessageOut> = client
+        let list_2_uid: ListResponse<EndpointMessageOut> = client
             .get(
                 &format!("api/v1/app/{}/endpoint/{}/msg/", app_id, "test"),
                 StatusCode::OK,
@@ -102,6 +168,16 @@ async fn test_list_attempted_messages() {
     })
     .await
     .unwrap();
+
+    let list_filtered: ListResponse<EndpointMessageOut> = client
+        .get(
+            &format!("api/v1/app/{app_id}/endpoint/{endp_id_1}/msg/?channel=news"),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_filtered.data.len(), 1);
+    assert!(list_filtered.data[0].msg == msg_3);
 }
 
 #[tokio::test]
@@ -131,9 +207,14 @@ async fn test_list_attempts_by_endpoint() {
     let msg_2 = create_test_message(&client, &app_id, serde_json::json!({"test": "data2"}))
         .await
         .unwrap();
-    let msg_3 = create_test_message(&client, &app_id, serde_json::json!({"test": "data3"}))
-        .await
-        .unwrap();
+    let msg_3 = create_test_msg_with(
+        &client,
+        &app_id,
+        serde_json::json!({"test": "data3"}),
+        "user.exploded",
+        ["obits"],
+    )
+    .await;
 
     // And wait at most one second for all attempts to be processed
     run_with_retries(|| async {
@@ -178,6 +259,60 @@ async fn test_list_attempts_by_endpoint() {
         assert!(message_ids.contains(&msg_3.id));
     }
 
+    let foo_attempts: ListResponse<MessageAttemptOut> = client
+        .get(
+            &format!("api/v1/app/{app_id}/attempt/endpoint/{endp_id_2}/?channel=foo"),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+    assert!(foo_attempts.data.is_empty());
+
+    let obits_attempts: ListResponse<MessageAttemptOut> = client
+        .get(
+            &format!("api/v1/app/{app_id}/attempt/endpoint/{endp_id_2}/?channel=obits"),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+    assert_eq!(obits_attempts.data.len(), 1);
+
+    let exploded_attempts: ListResponse<MessageAttemptOut> = client
+        .get(
+            &format!("api/v1/app/{app_id}/attempt/endpoint/{endp_id_2}/?event_types=user.exploded"),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+    assert_eq!(exploded_attempts.data.len(), 1);
+
+    let regular_attempts: ListResponse<MessageAttemptOut> = client
+        .get(
+            &format!("api/v1/app/{app_id}/attempt/endpoint/{endp_id_2}/?event_types[]=event.type"),
+            StatusCode::OK,
+        )
+        .await
+        .unwrap();
+    assert_eq!(regular_attempts.data.len(), 2);
+
+    let all_attempts_1: ListResponse<MessageAttemptOut> = client
+    .get(
+        &format!("api/v1/app/{app_id}/attempt/endpoint/{endp_id_2}/?event_types[0]=event.type&event_types[1]=user.exploded"),
+        StatusCode::OK,
+    )
+    .await
+    .unwrap();
+    assert_eq!(all_attempts_1.data.len(), 3);
+
+    let all_attempts_2: ListResponse<MessageAttemptOut> = client
+    .get(
+        &format!("api/v1/app/{app_id}/attempt/endpoint/{endp_id_2}/?event_types=event.type,user.exploded"),
+        StatusCode::OK,
+    )
+    .await
+    .unwrap();
+    assert_eq!(all_attempts_2.data.len(), 3);
+
     receiver_1.jh.abort();
     receiver_2.jh.abort();
 }
@@ -185,10 +320,7 @@ async fn test_list_attempts_by_endpoint() {
 #[tokio::test]
 async fn test_message_attempts() {
     let mut cfg = get_default_test_config();
-    cfg.retry_schedule = (0..2)
-        .into_iter()
-        .map(|_| Duration::from_millis(1))
-        .collect();
+    cfg.retry_schedule = (0..2).map(|_| Duration::from_millis(1)).collect();
 
     let (client, _jh) = start_svix_server_with_cfg(&cfg).await;
 
@@ -334,15 +466,22 @@ async fn test_pagination_by_endpoint() {
     let mut messages = Vec::new();
     for i in 1..=6usize {
         messages.push(
-            create_test_message(
-                &client,
-                &app.id,
-                serde_json::json!({
-                    "test": i,
-                }),
-            )
-            .await
-            .unwrap(),
+            async {
+                // the requests that depend on time (ie, `before` and `after`) can flake if too many
+                // messages are created too close together.
+                // This short sleep aims to separate them a little so we can get clean counts.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                create_test_message(
+                    &client,
+                    &app.id,
+                    serde_json::json!({
+                        "test": i,
+                    }),
+                )
+                .await
+                .unwrap()
+            }
+            .await,
         );
     }
 
@@ -467,9 +606,9 @@ async fn test_pagination_by_endpoint() {
             )
             .await
             .unwrap();
-        assert_eq!(first_three_by_time.data.len(), 3);
+        assert_eq!(first_three_by_time.data.len(), 4);
         assert_eq!(
-            &all_attempts.data[0..3],
+            &all_attempts.data[0..=3],
             first_three_by_time.data.as_slice()
         );
 
@@ -511,7 +650,7 @@ async fn test_pagination_by_msg() {
     }
 
     let mut messages = Vec::new();
-    for i in 1..=6usize {
+    for i in 1..=5usize {
         messages.push(
             create_test_message(
                 &client,
@@ -524,6 +663,16 @@ async fn test_pagination_by_msg() {
             .unwrap(),
         );
     }
+    messages.push(
+        create_test_msg_with(
+            &client,
+            &app.id,
+            serde_json::json!({"test": "data6"}),
+            "balloon.popped",
+            ["news"],
+        )
+        .await,
+    );
 
     // Wait until all attempts were made
     run_with_retries(|| async {
@@ -539,6 +688,18 @@ async fn test_pagination_by_msg() {
             if list.data.len() != 6 {
                 anyhow::bail!("list len {}, not 6", list.data.len());
             }
+
+            let list_filtered: ListResponse<MessageAttemptOut> = client
+                .get(
+                    &format!(
+                        "api/v1/app/{}/attempt/endpoint/{}/?channel=news",
+                        app.id, endp_id
+                    ),
+                    StatusCode::OK,
+                )
+                .await
+                .unwrap();
+            assert_eq!(list_filtered.data.len(), 1);
         }
 
         Ok(())

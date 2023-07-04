@@ -3,17 +3,24 @@
 
 use std::time::Duration;
 
-use axum::{http::StatusCode, routing::get, Extension, Json, Router};
-use sea_orm::{query::Statement, ConnectionTrait, DatabaseBackend, DatabaseConnection};
+use aide::axum::{
+    routing::{get, get_with},
+    ApiRouter,
+};
+use axum::{extract::State, http::StatusCode, Json};
+use sea_orm::{query::Statement, ConnectionTrait, DatabaseBackend};
 use serde::{Deserialize, Serialize};
+use svix_server_derive::aide_annotate;
 
 use crate::{
-    core::cache::{kv_def, Cache, CacheBehavior, CacheKey, CacheValue},
-    queue::{QueueTask, TaskQueueProducer},
+    core::cache::{kv_def, CacheBehavior, CacheKey, CacheValue},
+    queue::QueueTask,
+    v1::utils::{openapi_tag, NoContent},
+    AppState,
 };
 
-async fn ping() -> StatusCode {
-    StatusCode::NO_CONTENT
+async fn ping() -> NoContent {
+    NoContent
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -73,10 +80,15 @@ pub struct HealthReport {
 struct HealthCheckCacheValue(());
 kv_def!(HealthCheckCacheKey, HealthCheckCacheValue);
 
+/// Verify the API server is up and running.
+#[aide_annotate(op_id = "v1.health.get")]
 async fn health(
-    Extension(ref db): Extension<DatabaseConnection>,
-    Extension(queue_tx): Extension<TaskQueueProducer>,
-    Extension(cache): Extension<Cache>,
+    State(AppState {
+        ref db,
+        queue_tx,
+        cache,
+        ..
+    }): State<AppState>,
 ) -> (StatusCode, Json<HealthReport>) {
     // SELECT 1 FROM any table
     let database: HealthStatus = db
@@ -117,8 +129,15 @@ async fn health(
     )
 }
 
-pub fn router() -> Router {
-    Router::new()
-        .route("/health/ping/", get(ping).head(ping))
-        .route("/health/", get(health).head(health))
+pub fn router() -> ApiRouter<AppState> {
+    let tag = openapi_tag("Health");
+
+    ApiRouter::new()
+        .api_route("/health/ping/", get(ping).head(ping))
+        .api_route_with(
+            "/health/",
+            get_with(health, |op| op.response::<204, ()>().with(health_operation))
+                .head_with(health, health_operation),
+            tag,
+        )
 }

@@ -1,28 +1,27 @@
 use axum::{
-    extract::{Extension, Path},
+    extract::{Path, State},
     Json,
 };
 use chrono::{Duration, Utc};
-use hyper::StatusCode;
+use sea_orm::ActiveModelTrait;
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ActiveModelTrait, DatabaseConnection};
 use std::iter;
+use svix_server_derive::aide_annotate;
 
 use super::{EndpointSecretOut, EndpointSecretRotateIn};
 use crate::{
-    cfg::{Configuration, DefaultSignatureType},
+    cfg::DefaultSignatureType,
     core::{
         cryptography::Encryption,
+        operational_webhooks::{EndpointEvent, OperationalWebhook},
         permissions,
-        types::{
-            ApplicationIdOrUid, EndpointIdOrUid, EndpointSecretInternal, ExpiringSigningKey,
-            ExpiringSigningKeys,
-        },
+        types::{EndpointSecretInternal, ExpiringSigningKey, ExpiringSigningKeys},
     },
     ctx,
     db::models::endpoint,
     error::{HttpError, Result},
-    v1::utils::{EmptyResponse, ValidatedJson},
+    v1::utils::{ApplicationEndpointPath, NoContent, ValidatedJson},
+    AppState,
 };
 
 pub(super) fn generate_secret(
@@ -35,14 +34,18 @@ pub(super) fn generate_secret(
     }
 }
 
+/// Get the endpoint's signing secret.
+///
+/// This is used to verify the authenticity of the webhook.
+/// For more information please refer to [the consuming webhooks docs](https://docs.svix.com/consuming-webhooks/).
+#[aide_annotate(op_id = "v1.endpoint.get-secret")]
 pub(super) async fn get_endpoint_secret(
-    Extension(ref db): Extension<DatabaseConnection>,
-    Extension(cfg): Extension<Configuration>,
-    Path((_app_id, endp_id)): Path<(ApplicationIdOrUid, EndpointIdOrUid)>,
+    State(AppState { ref db, cfg, .. }): State<AppState>,
+    Path(ApplicationEndpointPath { endpoint_id, .. }): Path<ApplicationEndpointPath>,
     permissions::Application { app }: permissions::Application,
 ) -> Result<Json<EndpointSecretOut>> {
     let endp = ctx!(
-        endpoint::Entity::secure_find_by_id_or_uid(app.id, endp_id)
+        endpoint::Entity::secure_find_by_id_or_uid(app.id, endpoint_id)
             .one(db)
             .await
     )?
@@ -52,15 +55,21 @@ pub(super) async fn get_endpoint_secret(
     }))
 }
 
+/// Rotates the endpoint's signing secret.  The previous secret will be valid for the next 24 hours.
+#[aide_annotate(op_id = "v1.endpoint.rotate-secret")]
 pub(super) async fn rotate_endpoint_secret(
-    Extension(ref db): Extension<DatabaseConnection>,
-    Extension(cfg): Extension<Configuration>,
-    Path((_app_id, endp_id)): Path<(ApplicationIdOrUid, EndpointIdOrUid)>,
+    State(AppState {
+        ref db,
+        cfg,
+        ref op_webhooks,
+        ..
+    }): State<AppState>,
+    Path(ApplicationEndpointPath { endpoint_id, .. }): Path<ApplicationEndpointPath>,
     permissions::Application { app }: permissions::Application,
     ValidatedJson(data): ValidatedJson<EndpointSecretRotateIn>,
-) -> Result<(StatusCode, Json<EmptyResponse>)> {
+) -> Result<NoContent> {
     let mut endp = ctx!(
-        endpoint::Entity::secure_find_by_id_or_uid(app.id, endp_id)
+        endpoint::Entity::secure_find_by_id_or_uid(app.id, endpoint_id)
             .one(db)
             .await
     )?
@@ -106,7 +115,14 @@ pub(super) async fn rotate_endpoint_secret(
         ))),
         ..endp.into()
     };
-    ctx!(endp.update(db).await)?;
+    let endp = ctx!(endp.update(db).await)?;
 
-    Ok((StatusCode::NO_CONTENT, Json(EmptyResponse {})))
+    op_webhooks
+        .send_operational_webhook(
+            &app.org_id,
+            OperationalWebhook::EndpointUpdated(EndpointEvent::new(app.uid.as_ref(), &endp)),
+        )
+        .await?;
+
+    Ok(NoContent)
 }

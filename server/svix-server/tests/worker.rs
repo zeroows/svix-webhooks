@@ -2,7 +2,7 @@
 //! As such they are included with integration tests for organizational purposes.
 use std::{net::TcpListener, sync::Arc, time::Duration};
 
-use axum::extract::Extension;
+use axum::extract::State;
 use http::StatusCode;
 use svix_server::v1::{
     endpoints::{attempt::MessageAttemptOut, endpoint::EndpointOut},
@@ -14,7 +14,6 @@ mod utils;
 use utils::{
     common_calls::{create_test_app, create_test_endpoint, create_test_message},
     get_default_test_config, run_with_retries, start_svix_server, start_svix_server_with_cfg,
-    ResponseStatusCode,
 };
 
 /// Runs a full Axum server with two endoints. The first endpoint redirects to the second endpoint
@@ -24,6 +23,12 @@ struct RedirectionVisitReportingReceiver {
     pub base_uri: String,
     pub jh: tokio::task::JoinHandle<()>,
     pub has_been_visited: Arc<Mutex<bool>>,
+}
+
+#[derive(Clone)]
+struct RedirectionVisitReportingState {
+    has_been_visited: Arc<Mutex<bool>>,
+    resp_with: axum::http::StatusCode,
 }
 
 impl RedirectionVisitReportingReceiver {
@@ -43,8 +48,10 @@ impl RedirectionVisitReportingReceiver {
                 axum::routing::post(visit_reporting_receiver_route)
                     .get(visit_reporting_receiver_route),
             )
-            .layer(Extension(has_been_visited.clone()))
-            .layer(Extension(resp_with))
+            .with_state(RedirectionVisitReportingState {
+                has_been_visited: has_been_visited.clone(),
+                resp_with,
+            })
             .into_make_service();
 
         let jh = tokio::spawn(async move {
@@ -68,11 +75,13 @@ async fn redirecting_receiver_route() -> axum::response::Redirect {
 }
 
 async fn visit_reporting_receiver_route(
-    Extension(visited): Extension<Arc<Mutex<bool>>>,
-    Extension(status_code): Extension<Arc<Mutex<ResponseStatusCode>>>,
+    State(RedirectionVisitReportingState {
+        has_been_visited: visited,
+        resp_with,
+    }): State<RedirectionVisitReportingState>,
 ) -> StatusCode {
     *visited.lock().await = true;
-    status_code.lock().await.status_code
+    resp_with
 }
 
 // The worker has
@@ -121,7 +130,7 @@ async fn test_no_redirects_policy() {
 
 /// This tests that endpoints are successfully disabled after the retry schedule is exhausted
 /// multiple times without intermittent success over a period exceeding the grace period. So the
-/// tests don't take too long, thes grace period and expiration period will be reconfigured to be
+/// tests don't take too long, these grace period and expiration period will be reconfigured to be
 /// on the order of seconds
 #[tokio::test]
 async fn test_endpoint_disable_on_repeated_failure() {
@@ -129,7 +138,7 @@ async fn test_endpoint_disable_on_repeated_failure() {
 
     if !matches!(cfg.cache_type, svix_server::cfg::CacheType::None) {
         cfg.retry_schedule = vec![];
-        cfg.endpoint_failure_disable_after = Duration::from_secs(1);
+        cfg.endpoint_failure_disable_after = Duration::from_secs(2);
 
         let (client, _jh) = start_svix_server_with_cfg(&cfg).await;
 
@@ -144,7 +153,7 @@ async fn test_endpoint_disable_on_repeated_failure() {
             .unwrap()
             .id;
 
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
 
         let _msg_id = create_test_message(&client, &app_id, serde_json::json!({}))
             .await
@@ -224,6 +233,12 @@ struct SporadicallyFailingReceiver {
     pub jh: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Clone)]
+struct SporadicallyFailingState {
+    count: Arc<Mutex<u8>>,
+    resp_with: (http::StatusCode, http::StatusCode),
+}
+
 impl SporadicallyFailingReceiver {
     pub fn start(resp_with: (http::StatusCode, http::StatusCode)) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -236,8 +251,7 @@ impl SporadicallyFailingReceiver {
                 "/",
                 axum::routing::post(sporadically_failing_route).get(sporadically_failing_route),
             )
-            .layer(Extension(count))
-            .layer(Extension(resp_with))
+            .with_state(SporadicallyFailingState { count, resp_with })
             .into_make_service();
 
         let jh = tokio::spawn(async move {
@@ -253,8 +267,10 @@ impl SporadicallyFailingReceiver {
 }
 
 async fn sporadically_failing_route(
-    Extension(count): Extension<Arc<Mutex<u8>>>,
-    Extension((resp_ok, resp_fail)): Extension<(StatusCode, StatusCode)>,
+    State(SporadicallyFailingState {
+        count,
+        resp_with: (resp_ok, resp_fail),
+    }): State<SporadicallyFailingState>,
 ) -> StatusCode {
     let mut count = count.lock().await;
     *count += 1;

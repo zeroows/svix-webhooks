@@ -7,6 +7,7 @@ use figment::{
     providers::{Env, Format, Toml},
     Figment,
 };
+use ipnet::IpNet;
 use std::time::Duration;
 
 use crate::{core::cryptography::Encryption, core::security::Keys, error::Result};
@@ -53,7 +54,6 @@ where
         }
         RetryScheduleDeserializer::Legacy(buf) => Ok(buf
             .split(',')
-            .into_iter()
             .filter_map(|x| {
                 let x = x.trim();
                 if x.is_empty() {
@@ -173,6 +173,18 @@ pub struct ConfigurationInner {
     /// Should this instance run the message worker
     pub worker_enabled: bool,
 
+    /// Subnets to whitelist for outbound webhooks. Note that allowing endpoints in private IP space
+    /// is a security risk and should only be allowed if you are using the service internally or for
+    /// testing purposes. Should be specified in CIDR notation, e.g., `[127.0.0.1/32, 172.17.0.0/16, 192.168.0.0/16]`
+    pub whitelist_subnets: Option<Arc<Vec<IpNet>>>,
+
+    /// Maximum number of concurrent worker tasks to spawn (0 is unlimited)
+    pub worker_max_tasks: u16,
+
+    /// The address of the rabbitmq exchange
+    pub rabbit_dsn: Option<Arc<String>>,
+    pub rabbit_consumer_prefetch_size: Option<u16>,
+
     #[serde(flatten)]
     pub internal: InternalConfig,
 }
@@ -208,6 +220,17 @@ fn validate_config_complete(
                 });
             }
         }
+        QueueType::RabbitMQ => {
+            if config.rabbit_dsn.is_none() {
+                return Err(ValidationError {
+                    code: Cow::from("missing field"),
+                    message: Some(Cow::from(
+                        "The rabbit_dsn field must be set if the queue_type is `rabbitmq`",
+                    )),
+                    params: HashMap::new(),
+                });
+            }
+        }
     }
 
     Ok(())
@@ -231,6 +254,7 @@ impl ConfigurationInner {
             QueueType::Memory => QueueBackend::Memory,
             QueueType::Redis => QueueBackend::Redis(self.queue_dsn().expect(err)),
             QueueType::RedisCluster => QueueBackend::RedisCluster(self.queue_dsn().expect(err)),
+            QueueType::RabbitMQ => QueueBackend::RabbitMq(self.rabbit_dsn.as_ref().expect(err)),
         }
     }
 
@@ -272,6 +296,7 @@ pub enum QueueBackend<'a> {
     Memory,
     Redis(&'a str),
     RedisCluster(&'a str),
+    RabbitMq(&'a str),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -303,6 +328,7 @@ pub enum QueueType {
     Memory,
     Redis,
     RedisCluster,
+    RabbitMQ,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -410,7 +436,7 @@ mod tests {
         // NOTE: Does not use `figment::Jail` like the above because set env vars will leak into
         // other tests overwriting real configurations
         let mut cfg = load().unwrap();
-        let mut cfg = Arc::make_mut(&mut cfg);
+        let cfg = Arc::make_mut(&mut cfg);
 
         // Override all relevant values
         cfg.queue_type = QueueType::Redis;

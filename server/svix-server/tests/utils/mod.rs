@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use axum::response::IntoResponse;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -114,6 +115,35 @@ impl TestClient {
                 resp.json()
                     .await
                     .context("error receiving/parsing response")
+            }
+            Err(e) => {
+                println!("Unexpected request error: {e:?}");
+                Err(e.into())
+            }
+        }
+    }
+
+    pub async fn post_without_response<I: Serialize>(
+        &self,
+        endpoint: &str,
+        input: I,
+        expected_code: StatusCode,
+    ) -> Result<()> {
+        let mut req = self.client.post(self.build_uri(endpoint));
+        req = self.add_headers(req).json(&input);
+
+        let resp = req.send().await;
+        match resp {
+            Ok(resp) => {
+                if resp.status() != expected_code {
+                    anyhow::bail!(
+                        "assertation failed: expected status {}, actual status {}",
+                        expected_code,
+                        resp.status()
+                    );
+                }
+
+                Ok(())
             }
             Err(e) => {
                 println!("Unexpected request error: {e:?}");
@@ -258,6 +288,7 @@ pub async fn start_svix_server_with_cfg_and_org_id(
     (TestClient::new(base_uri, &token), jh)
 }
 
+#[derive(Debug)]
 pub struct TestReceiver {
     pub endpoint: String,
     pub jh: tokio::task::JoinHandle<()>,
@@ -267,12 +298,27 @@ pub struct TestReceiver {
 }
 
 #[derive(Clone)]
+pub struct TestAppState<T: IntoResponse + Clone> {
+    tx: mpsc::Sender<serde_json::Value>,
+    header_tx: mpsc::Sender<HeaderMap>,
+    response_status_code: Arc<Mutex<ResponseStatusCode>>,
+    response_body: T,
+}
+
+#[derive(Debug, Clone)]
 pub struct ResponseStatusCode {
     pub status_code: axum::http::StatusCode,
 }
 
 impl TestReceiver {
     pub fn start(resp_with: axum::http::StatusCode) -> Self {
+        Self::start_with_body(resp_with, ())
+    }
+
+    pub fn start_with_body<T>(resp_with: axum::http::StatusCode, body: T) -> Self
+    where
+        T: IntoResponse + Clone + Send + Sync + 'static,
+    {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/", listener.local_addr().unwrap());
 
@@ -288,9 +334,12 @@ impl TestReceiver {
                 "/",
                 axum::routing::post(test_receiver_route).get(test_receiver_route),
             )
-            .layer(axum::extract::Extension(tx))
-            .layer(axum::extract::Extension(header_tx))
-            .layer(axum::extract::Extension(response_status_code.clone()))
+            .with_state(TestAppState {
+                tx,
+                header_tx,
+                response_status_code: response_status_code.clone(),
+                response_body: body,
+            })
             .into_make_service();
 
         let jh = tokio::spawn(async move {
@@ -315,18 +364,22 @@ impl TestReceiver {
     }
 }
 
-async fn test_receiver_route(
-    axum::extract::Extension(ref tx): axum::extract::Extension<mpsc::Sender<serde_json::Value>>,
-    axum::extract::Extension(ref header_tx): axum::extract::Extension<mpsc::Sender<HeaderMap>>,
-    axum::extract::Extension(response_status_code): axum::extract::Extension<
-        Arc<Mutex<ResponseStatusCode>>,
-    >,
+async fn test_receiver_route<T: IntoResponse + Clone>(
+    axum::extract::State(TestAppState {
+        tx,
+        header_tx,
+        response_status_code,
+        response_body,
+    }): axum::extract::State<TestAppState<T>>,
     headers: HeaderMap,
     axum::Json(json): axum::Json<serde_json::Value>,
-) -> axum::http::StatusCode {
+) -> (axum::http::StatusCode, impl IntoResponse) {
     tx.send(json).await.unwrap();
     header_tx.send(headers).await.unwrap();
-    response_status_code.lock().unwrap().status_code
+    (
+        response_status_code.lock().unwrap().status_code,
+        response_body,
+    )
 }
 
 pub async fn run_with_retries<O, F, C>(f: C) -> Result<O>

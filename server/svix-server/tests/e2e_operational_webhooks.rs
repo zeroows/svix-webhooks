@@ -6,7 +6,9 @@ use std::{net::TcpListener, sync::Arc, time::Duration};
 use chrono::{DateTime, Utc};
 use http::StatusCode;
 
+use reqwest::Url;
 use serde::Deserialize;
+use svix::api::EventTypeOut;
 use svix_ksuid::KsuidLike;
 use svix_server::{
     cfg::ConfigurationInner,
@@ -19,7 +21,7 @@ use svix_server::{
     },
     v1::endpoints::{
         application::{ApplicationIn, ApplicationOut},
-        endpoint::{EndpointIn, EndpointOut},
+        endpoint::{EndpointIn, EndpointOut, EndpointSecretRotateIn},
     },
 };
 
@@ -28,6 +30,8 @@ use utils::{
     common_calls::{create_test_app, create_test_endpoint, create_test_message},
     get_default_test_config, IgnoredResponse, TestClient, TestReceiver,
 };
+
+use crate::utils::common_calls::default_test_endpoint;
 
 /// Sent when an endpoint has been automatically disabled after continuous failures.
 #[derive(Debug, Deserialize)]
@@ -155,9 +159,8 @@ async fn test_endpoint_create_update_and_delete() {
             &format!("api/v1/app/{}/endpoint/", op_webhook_app.id),
             EndpointIn {
                 description: "TestOperationalWebhookEndpoint".to_owned(),
-                url: receiver.endpoint.clone(),
-                version: 1,
-                ..Default::default()
+                url: Url::parse(&receiver.endpoint).unwrap(),
+                ..default_test_endpoint()
             },
             StatusCode::CREATED,
         )
@@ -203,9 +206,9 @@ async fn test_endpoint_create_update_and_delete() {
             ),
             EndpointIn {
                 description: "Updated description".to_owned(),
-                url: receiver.endpoint,
+                url: Url::parse(&receiver.endpoint).unwrap(),
                 version: 2,
-                ..Default::default()
+                ..default_test_endpoint()
             },
             StatusCode::OK,
         )
@@ -233,6 +236,25 @@ async fn test_endpoint_create_update_and_delete() {
         }
         _ => panic!("Got wrong type"),
     };
+
+    // Rotate secrets
+    let _: IgnoredResponse = client_regular
+        .post(
+            &format!(
+                "api/v1/app/{}/endpoint/{}/secret/rotate/",
+                regular_app.id, regular_endp.id
+            ),
+            EndpointSecretRotateIn::default(),
+            StatusCode::NO_CONTENT,
+        )
+        .await
+        .unwrap();
+
+    let op_webhook_out = receiver.data_recv.recv().await.unwrap();
+    assert_eq!(
+        op_webhook_out.get("type").unwrap().as_str().unwrap(),
+        "endpoint.updated"
+    );
 
     // And finally delete the endpoint
     let _: IgnoredResponse = client_regular
@@ -273,10 +295,7 @@ async fn test_endpoint_create_update_and_delete() {
 async fn test_message_attempt_operational_webhooks() {
     let mut cfg = get_default_test_config();
 
-    cfg.retry_schedule = (0..5)
-        .into_iter()
-        .map(|_| Duration::from_millis(1))
-        .collect();
+    cfg.retry_schedule = (0..5).map(|_| Duration::from_millis(1)).collect();
 
     let (client_regular, client_op, org_id, _jh) = start_svix_server_with_operational_webhooks(cfg);
 
@@ -302,9 +321,8 @@ async fn test_message_attempt_operational_webhooks() {
             &format!("api/v1/app/{}/endpoint/", op_webhook_app.id),
             EndpointIn {
                 description: "TestOperationalWebhookEndpoint".to_owned(),
-                url: receiver.endpoint.clone(),
-                version: 1,
-                ..Default::default()
+                url: Url::parse(&receiver.endpoint).unwrap(),
+                ..default_test_endpoint()
             },
             StatusCode::CREATED,
         )
@@ -401,5 +419,26 @@ async fn test_message_attempt_operational_webhooks() {
         assert_eq!(endpoint_id, regular_endp.id);
     } else {
         panic!("Invalid type for op_webhook_out")
+    }
+}
+
+#[tokio::test]
+async fn test_operational_webhooks_event_types_exist() {
+    let cfg = get_default_test_config();
+    let (_, client_op, _, _jh) = start_svix_server_with_operational_webhooks(cfg);
+
+    for et in &[
+        "message.attempt.failing",
+        "message.attempt.exhausted",
+        "endpoint.created",
+        "endpoint.deleted",
+        "endpoint.disabled",
+        "endpoint.created",
+        "endpoint.updated",
+    ] {
+        let _: EventTypeOut = client_op
+            .get(&format!("api/v1/event-type/{et}/"), StatusCode::OK)
+            .await
+            .unwrap();
     }
 }

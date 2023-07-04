@@ -4,6 +4,7 @@
 use std::error;
 use std::fmt;
 
+use aide::OperationOutput;
 use axum::extract::rejection::ExtensionRejection;
 use axum::extract::rejection::PathRejection;
 use axum::extract::rejection::TypedHeaderRejection;
@@ -14,12 +15,14 @@ use axum::response::Response;
 use axum::Json;
 use axum::TypedHeader;
 use hyper::StatusCode;
+use schemars::JsonSchema;
 use sea_orm::DbErr;
 use sea_orm::RuntimeErr;
 use sea_orm::TransactionError;
 use serde::Serialize;
 use serde_json::json;
-use sqlx::Error as SqlxError;
+
+use crate::core::webhook_http_client;
 
 /// A short-hand version of a [std::result::Result] that always returns an Svix [Error].
 pub type Result<T> = std::result::Result<T, Error>;
@@ -109,6 +112,10 @@ impl IntoResponse for Error {
     }
 }
 
+impl OperationOutput for Error {
+    type Inner = Self;
+}
+
 /// Returns a [&'static str] of the file.rs:<line_number>.
 #[macro_export]
 macro_rules! location {
@@ -144,6 +151,13 @@ macro_rules! err_queue {
 }
 
 #[macro_export]
+macro_rules! err_cache {
+    ($s:expr) => {
+        $crate::error::Error::cache($s, $crate::location!())
+    };
+}
+
+#[macro_export]
 macro_rules! err_validation {
     ($s:expr) => {
         $crate::error::Error::validation($s, $crate::location!())
@@ -173,34 +187,7 @@ impl<T> Traceable<T> for Result<T> {
 
 impl<T> Traceable<T> for std::result::Result<T, DbErr> {
     fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|err| {
-            let typ = if let DbErr::Query(runtime_error) = err {
-                match runtime_error {
-                    RuntimeErr::SqlxError(sqlx_err) => {
-                        if matches!(sqlx_err, SqlxError::RowNotFound) {
-                            HttpError::not_found(None, None).into()
-                        } else if sqlx_err
-                            .as_database_error()
-                            .and_then(|e| e.code())
-                            .filter(|code| code == "23505") // "duplicate key value violates unique constraint"
-                            .is_some()
-                        {
-                            HttpError::conflict(None, None).into()
-                        } else {
-                            ErrorType::Database(sqlx_err.to_string())
-                        }
-                    }
-                    RuntimeErr::Internal(err) => ErrorType::Database(err),
-                }
-            } else {
-                ErrorType::Database(err.to_string())
-            };
-
-            Error {
-                trace: Error::init_trace(location),
-                typ,
-            }
-        })
+        self.map_err(|e| Error::database(e, location))
     }
 }
 
@@ -251,6 +238,12 @@ impl<T> Traceable<T> for std::result::Result<T, TransactionError<Error>> {
     }
 }
 
+impl<T> Traceable<T> for std::result::Result<T, lapin::Error> {
+    fn trace(self, location: &'static str) -> Result<T> {
+        self.map_err(|e| Error::queue(format!("{e:?}"), location))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ErrorType {
     /// A generic error
@@ -265,6 +258,8 @@ pub enum ErrorType {
     Http(HttpError),
     /// Cache error
     Cache(String),
+    /// Timeout error
+    Timeout(String),
 }
 
 impl fmt::Display for ErrorType {
@@ -276,6 +271,7 @@ impl fmt::Display for ErrorType {
             Self::Validation(s) => s.fmt(f),
             Self::Http(s) => s.fmt(f),
             Self::Cache(s) => s.fmt(f),
+            Self::Timeout(s) => s.fmt(f),
         }
     }
 }
@@ -286,14 +282,28 @@ impl From<HttpError> for ErrorType {
     }
 }
 
+// Python generation relies on the title of this being `HttpError`
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "HttpErrorOut", title = "HttpError")]
+pub struct StandardHttpError {
+    code: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "HTTPValidationError")]
+pub struct ValidationHttpError {
+    detail: Vec<ValidationErrorItem>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum HttpErrorBody {
-    Standard { code: String, detail: String },
-    Validation { detail: Vec<ValidationErrorItem> },
+    Standard(StandardHttpError),
+    Validation(ValidationHttpError),
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, JsonSchema)]
 /// Validation errors have their own schema to provide context for invalid requests eg. mismatched
 /// types and out of bounds values. There may be any number of these per 422 UNPROCESSABLE ENTITY
 /// error.
@@ -313,7 +323,7 @@ pub struct ValidationErrorItem {
 
 #[derive(Debug, Clone)]
 pub struct HttpError {
-    status: StatusCode,
+    pub status: StatusCode,
     body: HttpErrorBody,
 }
 
@@ -321,7 +331,7 @@ impl HttpError {
     fn new_standard(status: StatusCode, code: String, detail: String) -> Self {
         Self {
             status,
-            body: HttpErrorBody::Standard { code, detail },
+            body: HttpErrorBody::Standard(StandardHttpError { code, detail }),
         }
     }
 
@@ -368,7 +378,7 @@ impl HttpError {
     pub fn unprocessable_entity(detail: Vec<ValidationErrorItem>) -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
-            body: HttpErrorBody::Validation { detail },
+            body: HttpErrorBody::Validation(ValidationHttpError { detail }),
         }
     }
 
@@ -398,13 +408,13 @@ impl From<HttpError> for Error {
 impl fmt::Display for HttpError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.body {
-            HttpErrorBody::Standard { code, detail } => write!(
+            HttpErrorBody::Standard(StandardHttpError { code, detail }) => write!(
                 f,
                 "status={} code=\"{}\" detail=\"{}\"",
                 self.status, code, detail
             ),
 
-            HttpErrorBody::Validation { detail } => {
+            HttpErrorBody::Validation(ValidationHttpError { detail }) => {
                 write!(
                     f,
                     "status={} detail={}",
@@ -420,5 +430,39 @@ impl fmt::Display for HttpError {
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         (self.status, Json(self.body)).into_response()
+    }
+}
+
+impl From<ErrorType> for Error {
+    fn from(typ: ErrorType) -> Self {
+        Self { trace: vec![], typ }
+    }
+}
+
+impl From<crate::core::webhook_http_client::Error> for Error {
+    fn from(err: webhook_http_client::Error) -> Error {
+        match err {
+            webhook_http_client::Error::TimedOut => ErrorType::Timeout(err.to_string()).into(),
+            _ => err_generic!(err.to_string()),
+        }
+    }
+}
+
+/// Utility function for Converting a [`DbErr`] into an [`HttpError`] (wrapped by [`Error`]) on the
+/// error "duplicate key value violates unique constraint". This is to be used in `map_err` calls
+/// on creation/update of records
+pub fn http_error_on_conflict(db_err: DbErr) -> Error {
+    match db_err {
+        DbErr::Query(RuntimeErr::SqlxError(e))
+            if e.as_database_error()
+                .and_then(|e| e.code())
+                .filter(|code| code == "23505")
+                .is_some() =>
+        {
+            HttpError::conflict(None, None).into()
+        }
+        // This always inserts a blank locaton, but because it should be wrapped by a [`ctx`] call,
+        // you should still get a meaningful trace
+        e => Error::database(e, ""),
     }
 }

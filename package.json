@@ -6,9 +6,9 @@
     "generate": "bash ./regen_openapi.sh"
   },
   "devDependencies": {
-    "@openapitools/openapi-generator-cli": "^2.4.18",
+    "@openapitools/openapi-generator-cli": "^2.6.0",
     "axios": "^0.26.1",
     "openapi-to-postmanv2": "^3.1.0",
-    "semver": "^7.3.5"
+    "semver": "^7.5.2"
   }
 }

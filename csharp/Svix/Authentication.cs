@@ -20,11 +20,56 @@ namespace Svix
             _authenticationApi = authenticationApi ?? throw new ArgumentNullException(nameof(authenticationApi));
         }
 
+        public AppPortalAccessOut GetAppPortalAccess(string appId, AppPortalAccessIn appPortalAccess, string idempotencyKey = default)
+        {
+            try
+            {
+                var lMessage = _authenticationApi.V1AuthenticationAppPortalAccess(
+                    appId,
+                    appPortalAccess,
+                    idempotencyKey);
+
+                return lMessage;
+            }
+            catch (ApiException e)
+            {
+                Logger?.LogError(e, $"{nameof(GetAppPortalAccess)} failed");
+
+                if (Throw)
+                    throw;
+
+                return null;
+            }
+        }
+
+        public async Task<AppPortalAccessOut> GetAppPortalAccessAsync(string appId, AppPortalAccessIn appPortalAccess,
+            string idempotencyKey = default, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var lMessage = await _authenticationApi.V1AuthenticationAppPortalAccessAsync(
+                    appId,
+                    appPortalAccess,
+                    idempotencyKey);
+
+                return lMessage;
+            }
+            catch (ApiException e)
+            {
+                Logger?.LogError(e, $"{nameof(GetAppPortalAccessAsync)} failed");
+
+                if (Throw)
+                    throw;
+
+                return null;
+            }
+        }
+
         public DashboardAccessOut GetDashboardAccess(string appId, string idempotencyKey = default)
         {
             try
             {
-                var lMessage = _authenticationApi.GetDashboardAccessApiV1AuthDashboardAccessAppIdPost(
+                var lMessage = _authenticationApi.V1AuthenticationDashboardAccess(
                     appId,
                     idempotencyKey);
 
@@ -46,7 +91,7 @@ namespace Svix
         {
             try
             {
-                var lMessage = await _authenticationApi.GetDashboardAccessApiV1AuthDashboardAccessAppIdPostAsync(
+                var lMessage = await _authenticationApi.V1AuthenticationDashboardAccessAsync(
                     appId,
                     idempotencyKey);
 
@@ -67,7 +112,7 @@ namespace Svix
         {
             try
             {
-                var lResult = _authenticationApi.LogoutApiV1AuthLogoutPostWithHttpInfo(
+                var lResult = _authenticationApi.V1AuthenticationLogoutWithHttpInfo(
                     idempotencyKey);
 
                 return lResult.StatusCode == HttpStatusCode.NoContent;
@@ -87,7 +132,7 @@ namespace Svix
         {
             try
             {
-                var lResult = await _authenticationApi.LogoutApiV1AuthLogoutPostWithHttpInfoAsync(
+                var lResult = await _authenticationApi.V1AuthenticationLogoutWithHttpInfoAsync(
                     idempotencyKey,
                     cancellationToken);
 
